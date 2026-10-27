@@ -1,0 +1,20 @@
+---
+name: capcut-cinematic-cards
+description: Use when adding cinematic time cards, location cards, or first-appearance character introductions to a local CapCut project, especially around existing black fades while preserving compound clips, dialogue and important shots, without computer use.
+---
+
+# CapCut cinematic cards
+
+Work through local files and terminal only. No computer use, UI automation, external API key or MCP server. Python 3.10+ runs the helper; FFmpeg/ffprobe provide source evidence. Resolve `scripts/cards.py` relative to this skill. Read [the editing guide](references/editing.md) before choosing cards, and [the command/plan reference](references/tool.md) before staging.
+
+## Workflow
+
+1. Run `projects`, then `inspect PROJECT`. Resolve the indexed main timeline; never guess from the project index ID. Accept only readable schema 360000. Read the supplied screenplay, transcript and character references locally. If missing, search the project context first. Do not invent exact dates, locations, names or identities.
+2. Build a short candidate list. Use time/location cards only when a meaningful change would otherwise be unclear. Character cards require a confirmed identity and a review of earlier scenes to establish the first visible appearance. Preserve deliberate mystery and avoid minor-character clutter. Record rejected candidates as well as accepted ones.
+3. Use `probe` around each candidate, including at least four seconds before and five after where available; extend review to cover the entire proposed card. Open the extracted images and review all audio stems with their global offsets, captions and script. Optional local ASR is supporting evidence, never proof of silence. Sources are **uncomposited**, so also inspect transforms, overlays, captions, fades and layers. Unresolved visual/audio mapping means omit or defer that candidate.
+4. Protect dialogue, subtitles, faces, gestures, entrances, reactions and reveals. A short black fade does **not** justify extending black over the scene. Leave original transitions unchanged. Prefer a quiet lower-third after the fade when the black interval is too short. Review the whole hold, not just the cut. Choose one film-specific typographic system; confirm the installed font supports the text language. See the editing guide for character timing and style choices.
+5. Write the complete plan yourself, outside the project. Include actual evidence paths/findings and protected ranges. Default to 3.2–3.6 seconds, readable size, restrained opacity fades. Generate separate editable text tracks only. Do not add fullscreen mattes, modify a compound, replace source media, insert time, retime, mute or change existing tracks.
+6. `stage` creates backups and a reviewable draft without writing the project. Complete this before any save/close coordination. `apply` refuses a running editor and stale inputs. Never kill the editor, bypass the check or touch unsaved changes. If busy, report the concrete staged result and blocker. Otherwise apply the authorized edit and run `verify`.
+7. Report card text, placement, style, skipped ambiguities and backup location concisely. Distinguish file preservation from CapCut playback: never claim native rendering was verified without actual playback/render evidence. Do not ask the user to edit JSON. Use guarded `restore` for rollback; never overwrite later user edits.
+
+Ownership is exact-ID-and-hash based. If CapCut normalizes or the user edits owned titles, inspect and preserve those changes rather than forcing a rerun. Never publish private projects, frames, voices, fonts or credentials.
