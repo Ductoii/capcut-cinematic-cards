@@ -27,7 +27,7 @@ def backend():
     with (STATE/'daemon.log').open('ab') as log:
         proc=subprocess.Popen([sys.executable,'-m','capcut_harness','--state-dir',str(STATE),'--no-browser'],
             stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,cwd=Path(__file__).parent.parent)
-    for _ in range(80):
+    for _ in range(250):
         try:
             client=existing_client(STATE)
             if client:return client
