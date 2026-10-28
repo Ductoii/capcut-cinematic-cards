@@ -1,6 +1,6 @@
 # Connected CapCut workspace and source-aware dialogue leveling
 
-Status: proposed; independent builder review completed, awaiting user approval. Supersedes the finite-command and separate-card-skill decisions of the v0.2.0 design. Existing backup, stale-project, editor-closed and exact Undo invariants remain requirements.
+Status: implement directly. The user explicitly delegated the audio method and asked to stop approval/recheck/300-source verification loops. This instruction supersedes the previous approval and verification gates below. Supersedes the finite-command and separate-card-skill decisions of the v0.2.0 design. Existing backup, stale-project, editor-closed and exact Undo invariants remain requirements.
 
 ## User intent
 
@@ -37,6 +37,8 @@ References: [official UI/plugin guidance](https://developers.openai.com/plugins/
 
 No account, model, reasoning, permissions or app-server configuration is silently changed. The installed host must actually support local MCP App rendering and `ui/message`. If it does not, that is an unresolved requirement to report and investigate; an unconnected browser/inbox is not acceptable completion. A mocked host is useful for tests but cannot prove native same-chat delivery.
 
+Official [conversation-panel extension guidance](https://developers.openai.com/plugins/build/extensions) supplies the specific side-panel entrypoint: the render tool declares `_meta.ui.resourceUri` and `_meta["openai/ui"].entrypoints: [{"type":"thread"}]`. Use this host-supported conversation-panel surface for the requested adjacent UI, rather than assuming standard fullscreen means a side panel. Probe both panel presentation and `ui/message` in the installed desktop host; documentation alone is not a native acceptance result.
+
 ## Unified skill and card capability
 
 - Install a self-contained `capcut-harness` skill in the local plugin containing shared startup/connection instructions and conditional references for dialogue and cards. Move canonical card scripts and references beneath that skill or the installed package; no dependency on a separately installed sibling skill.
@@ -70,16 +72,11 @@ The algorithm must be evaluated against actual output at each source's mapped di
 
 Apply continues to add an external root audio master and mute the known original root audio participants, preserving compound contents, video, text and timing. Backups, editor-closed guards, freshness, revision checks and exact Undo remain mandatory. A/B is source-reconstructed audio until editor playback/export is actually verified.
 
-## Verification and release requirements
+## Delivery scope after user correction
 
-- Regression reproduces the demonstrated adjacent quiet/loud source case and proves detection/leveling for all four sources after correction. Validate per-source output LUFS, not only aggregate accepted spans.
-- A generated 300-source timeline with randomized gains, varied headroom/peaks, gaps, boundaries and nested compounds must account for all sources; all eligible dialogue must meet the declared tolerance or be specifically reported. Include low-level real speech, high-crest speech, excluded clips, silence, separate music and overlapping speech. Validate that separate non-dialogue audio is preserved before final peak protection.
-- Meaningful audio invariants: exact duration/sample count, finite samples, measured true peak, stated target tolerance, no detector-only gain leaking into audio, no cross-cut envelope interpolation, limited intraphrase/dynamics damage and honest unresolved flags. Exercise review revisions and Apply/Undo on disposable fixtures.
-- Browser verification: natural-language requests beyond the old grammar; same-chat binding; two tabs bound to distinct test connections; idempotency; failure/uncertain delivery states; safe result rendering; card/audio requests; responsive layout and A/B behavior.
-- Native integration test must send from the actual UI into the same live desktop chat, receive an agent acknowledgment and publish a result back. Mock transport tests alone do not establish this.
-- Unified clean install and wheel outside checkout; new chat discovery/startup; card commands and audio operations work without sibling skill dependencies. Existing managed v0.2.0 state/backups/Undo remain readable. Update Vietnamese/English README and one-line public install.
-- Reanalyze the actual local project `/Users/daho100/Movies/CapCut/User Data/Projects/com.lveditor.draft/1027` using the corrected engine and present representative low/high A/B excerpts plus per-source measured results. Do not mutate the real project while CapCut is open. Native editor render verification remains separately reported.
-- Fresh whole-change review, resolve findings, publish corrected release to the existing public repository, install it locally and verify the actual installed bridge/audio path. Do not describe this goal as complete based only on a design, a mocked bridge or a smaller audio fixture.
+Implement the unified local plugin and same-chat UI, source-aware film/online dialogue processing, and update/install the public package. Do not run a 300-source exercise, repeat whole-film 1027 analysis, or start another approval/review cycle. Retain the existing guarded Apply/Undo code; no actual project mutation is needed to deliver the tool update. Do only packaging/build checks needed to produce a runnable install. Do not claim native playback or listening acceptance that did not occur.
+
+Audio method is delegated to the builder: speech anchoring per source before summation, gentle dynamics to tame protruding syllables, and final peak protection. The meter's yellow area is a useful peak cue, not a substitute for equal perceived speech loudness. Preserve quieter/louder performance within a line and leave separate non-dialogue tracks unchanged before final peak protection.
 
 ## Builder-owned choices
 
