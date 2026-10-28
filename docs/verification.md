@@ -31,3 +31,14 @@ Apply and Undo were verified on disposable native-schema projects, including com
 ## Release boundaries
 
 The public repository contains code, documentation, tests, the licensed VAD model and local font. It excludes private project/media paths, film audio/video, generated job outputs, installation environments, recordings and credentials. The old standalone v0.1.1 card installer remains available unchanged. The v0.2.0 installer adds the full harness and both skills.
+
+## v0.3.0 delivery — 2026-10-28
+
+Scope follows the owner's explicit opt-out from additional recheck/review, a 300-source exercise and a real-film listening run.
+
+- Python compilation, JavaScript syntax and Git whitespace checks passed.
+- Wheel built with card backend, source engine, MCP transport, ONNX model and UI assets present.
+- Managed local installation completed with NumPy/ORT; native Codex CLI accepted marketplace/plugin registration.
+- Installed stdio MCP returned initialization, six tools, a workspace connection and a self-contained `text/html;profile=mcp-app` resource.
+- Initial discovery exceeded the original eight-second startup grace; increased it to 25 seconds.
+- Host rendering and UI-to-chat message delivery have not been observed in this already-open chat. A fresh chat must discover the plugin tools. No native CapCut playback/export or listening-quality claim is made for v0.3.0; historical tests below/above apply to their recorded versions only.
