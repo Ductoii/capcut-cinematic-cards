@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -86,6 +88,63 @@ class JobsTest(unittest.TestCase):
             result=wait_job(restarted,ticket['job_id'],('applied','failed'))
         self.assertEqual(result['state'],'applied',result)
         self.assertEqual(operations,[('ab12','apply','saved-stage')])
+
+    def test_queued_apply_refuses_a_revision_replaced_while_waiting(self):
+        p=self.project();service=Service(self.root/'state',[p.parent]);self.addCleanup(service.close)
+        project=service.projects()[0];entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
+        original=service._execute;calls=[]
+        def execute(job,operation,*args):
+            if operation=='analyze':
+                if not entered.is_set():entered.set();release.wait(10)
+                return dict(state='ready')
+            return original(job,operation,*args)
+        with mock.patch.object(service,'_execute',side_effect=execute),mock.patch('capcut_harness.service.transaction.apply',side_effect=lambda *a:calls.append(a) or dict(verified=True)):
+            service.dispatch(dict(action='dialogue.analyze',project_id=project['id'],params={}))
+            self.assertTrue(entered.wait(5))
+            service.store.save(dict(id='ab12',state='ready',operation='analyze',project_id=project['id'],params={},created_at='2026-10-28',stage_path='saved-stage'))
+            service.registry[project['id']]['latest_job']='ab12'
+            service.dispatch(dict(action='dialogue.apply',job_id='ab12'))
+            service.dispatch(dict(action='dialogue.analyze',project_id=project['id'],params={}))
+            release.set();job=wait_job(service,'ab12',('ready','applied','failed'))
+        self.assertEqual(calls,[],'An obsolete queued review must not reach the writer')
+        self.assertEqual(job['state'],'ready');self.assertIn('Newer',job['error'])
+
+    def test_real_process_crash_is_recovered_after_restart_and_retry(self):
+        import test_harness_transaction as fixtures
+        fixture=fixtures.TransactionTest();fixture.setUp();self.addCleanup(fixture.doCleanups)
+        timeline=fixture.project/'Timelines/main';timeline.mkdir(parents=True)
+        for name in ('draft_info.json','draft_info.json.bak'):(timeline/name).write_bytes((fixture.project/name).read_bytes())
+        (fixture.project/'Timelines/project.json').write_text(json.dumps(dict(main_timeline_id='main')))
+        fixture.info=fixtures.inspect_audio(fixture.project)
+        fixture.before={str(p.relative_to(fixture.project)):p.read_bytes() for p in fixture.project.rglob('*.json*')}
+        stage=fixture.stage();service=Service(self.root/'state',[fixture.project]);project=service.projects()[0]
+        service.store.save(dict(id='ab12',state='applying',operation='apply',project_id=project['id'],params={},created_at='2026-10-28',stage_path=str(stage)))
+        service.registry[project['id']]['latest_job']='ab12';service.store.write(service.root/'projects.json',service.registry);service.close()
+        code="""import os,sys
+from capcut_harness import transaction as tx
+from capcut_harness.legacy import cards
+cards.editor_running=lambda:False
+real=tx.atomic_copy
+calls=[]
+def crash(target,source):
+    real(target,source);calls.append(str(target))
+    if len(calls)==2:os._exit(23)
+tx.atomic_copy=crash
+tx.apply(sys.argv[1])
+"""
+        child=subprocess.run([sys.executable,'-c',code,str(stage)],capture_output=True,text=True,timeout=15)
+        self.assertEqual(child.returncode,23,child.stderr)
+        self.assertTrue((fixture.project/'.capcut-cards.lock').is_file())
+        restarted=Service(self.root/'state',[fixture.project]);self.addCleanup(restarted.close)
+        with mock.patch.object(cards,'editor_running',return_value=False):
+            ticket=restarted.dispatch(dict(action='dialogue.retry',job_id='ab12'))
+            job=wait_job(restarted,ticket['job_id'],('applied','failed','ready'))
+            self.assertEqual(job['state'],'applied',job)
+            restarted.dispatch(dict(action='dialogue.undo',job_id='ab12'))
+            restored=wait_job(restarted,'ab12',('restored','applied','failed'))
+            self.assertEqual(restored['state'],'restored',restored)
+        for name,raw in fixture.before.items():self.assertEqual((fixture.project/name).read_bytes(),raw)
+        self.assertFalse((fixture.project/'.capcut-cards.lock').exists())
 
     def test_worker_serializes_jobs_and_cancellation_reaches_running_job(self):
         p=self.project();service=Service(self.root/'state',[p.parent]);self.addCleanup(service.close)

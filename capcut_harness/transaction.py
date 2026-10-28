@@ -1,5 +1,6 @@
 """Journaled native audio transactions sharing the cards tool's project lock."""
 import copy
+import contextlib
 import json
 import os
 import re
@@ -39,9 +40,36 @@ def safe_target(project,name):
     return target
 
 
+@contextlib.contextmanager
+def project_locked(project):
+    """Reclaim only a demonstrably dead owner; serialize competing recoveries."""
+    path=project/'.capcut-cards.lock';handle=None
+    try:
+        if path.exists() or path.is_symlink():
+            cards.require(not path.is_symlink() and path.is_file(),'Uncertain shared lock; preserving it')
+            handle=path.open('rb')
+            try:
+                import fcntl
+                fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except (ImportError,OSError) as exc:raise ValueError('Shared lock is held or recovery is unavailable; preserving it') from exc
+            owner=handle.read().decode('ascii',errors='replace').strip()
+            cards.require(owner.isdigit() and int(owner)>0,'Uncertain shared lock owner; preserving it')
+            try:os.kill(int(owner),0)
+            except ProcessLookupError:pass
+            except (OSError,OverflowError) as exc:raise ValueError('Uncertain shared lock owner; preserving it') from exc
+            else:raise ValueError('Live process owns shared lock; preserving it')
+            current=path.stat();opened=os.fstat(handle.fileno())
+            cards.require((current.st_dev,current.st_ino)==(opened.st_dev,opened.st_ino),'Shared lock changed during recovery')
+            path.unlink()
+        with cards.locked(project):yield
+    finally:
+        if handle is not None:handle.close()
+
+
 def stage(inventory,rendered,directory):
     assert_sources_current(inventory)
     project,_,original,mirrors,signature=cards.load(inventory['project'])
+    cards.require(signature==inventory['project_sha256'] and set(mirrors)==set(inventory['mirrors']),'Project snapshot changed since analysis')
     cards.require(not (project/STATE).exists(),'Project already has a harness audio transaction; undo first')
     directory=Path(directory).resolve()
     cards.require(not directory.exists() and not directory.is_relative_to(project),'Use a fresh stage outside the project')
@@ -90,10 +118,17 @@ def stage(inventory,rendered,directory):
     # Asset first, draft mirrors next, ownership last. Every partial state is recoverable.
     order=[resource,*mirrors,STATE]
     for name in order:
-        target=safe_target(project,name);before[name]=cards.digest(target)
-        if target.exists():atomic_copy(directory/'before'/name,target)
+        target=safe_target(project,name);expected=inventory['guards'][name] if name in mirrors else None
+        cards.require(cards.digest(target)==expected,f'Project snapshot changed while staging: {name}')
+        before[name]=expected
+        if expected is not None:
+            atomic_copy(directory/'before'/name,target)
+            cards.require(cards.digest(directory/'before'/name)==expected and cards.digest(target)==expected,f'Project changed during backup: {name}')
         source=master if name==resource else directory/('state.json' if name==STATE else 'draft.json')
         files[name]=str(source);after[name]=cards.digest(source)
+    assert_sources_current(inventory)
+    _,_,_,current_mirrors,current_signature=cards.load(project)
+    cards.require(set(current_mirrors)==set(mirrors) and current_signature==signature,'Project snapshot changed during staging')
     meta=dict(version=1,project=str(project),project_id=original.get('id'),before=before,after=after,files=files,
               guards={k:v for k,v in inventory['guards'].items() if k not in mirrors},
               evidence={**inventory['source_hashes'],**rendered['file_hashes'],str(directory/'review.json'):cards.digest(directory/'review.json')},
@@ -119,7 +154,17 @@ def transaction(directory):
     return directory,project,meta
 
 
+def check_mirror_membership(project,meta):
+    expected={n for n in meta['before'] if n not in (STATE,meta['resource'])}
+    folders={project,*[(project/n).parent for n in expected]}
+    current={str((folder/name).relative_to(project)) for folder in folders for name in ('draft_info.json','draft_info.json.bak','template-2.tmp') if (folder/name).exists() or (folder/name).is_symlink()}
+    cards.require(current==expected,'Project mirror membership changed since review')
+    if not (project/'Timelines/project.json').exists() and (project/'Timelines').is_dir():
+        cards.require(not list((project/'Timelines').glob('*/draft_info.json')),'Project timeline membership changed since review')
+
+
 def check_evidence(project,meta):
+    check_mirror_membership(project,meta)
     for name,signature in meta['evidence'].items():
         cards.require(cards.digest(name)==signature,'Source media or reviewed output changed; regenerate job')
     for name,signature in meta['guards'].items():
@@ -129,6 +174,7 @@ def check_evidence(project,meta):
 
 def verify(directory):
     directory,project,meta=transaction(directory)
+    check_mirror_membership(project,meta)
     for name,signature in meta['after'].items():
         cards.require(cards.digest(safe_target(project,name))==signature,f'Output changed: {name}')
     return dict(verified=True,project=str(project),file_verification_only=True,
@@ -139,7 +185,7 @@ def apply(directory):
     directory,project,meta=transaction(directory)
     cards.require(not cards.editor_running(),'CapCut is running; save and close before apply')
     check_evidence(project,meta)
-    with cards.locked(project):
+    with project_locked(project):
         if all(cards.digest(project/n)==v for n,v in meta['after'].items()):return verify(directory)
         for name,previous in meta['before'].items():
             cards.require(cards.digest(safe_target(project,name)) in (previous,meta['after'][name]),f'Project changed since staging: {name}')
@@ -169,7 +215,8 @@ def apply(directory):
 def undo(directory):
     directory,project,meta=transaction(directory)
     cards.require(not cards.editor_running(),'CapCut is running; save and close before undo')
-    with cards.locked(project):
+    with project_locked(project):
+        check_mirror_membership(project,meta)
         for name,old in meta['before'].items():
             cards.require(cards.digest(safe_target(project,name)) in (old,meta['after'][name]),f'Project changed after apply: {name}; preserving user edits')
         for name in reversed(list(meta['before'])):

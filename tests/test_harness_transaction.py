@@ -52,6 +52,26 @@ class TransactionTest(unittest.TestCase):
         self.assertFalse((self.project/tx.STATE).exists())
         self.assertEqual(len(list((self.project/'Resources/HarnessAudio').glob('*.wav'))),1)
 
+    def test_save_during_staging_is_not_adopted_as_review_baseline(self):
+        load=cards.load
+        def saved_during_load(project):
+            loaded=load(project)
+            for name in loaded[3]:
+                path=loaded[0]/name;data=cards.read(path)
+                data['user_saved_note']='FOREIGN EDIT MUST SURVIVE'
+                path.write_bytes(cards.encoded(data))
+            return loaded
+        with mock.patch.object(cards,'load',side_effect=saved_during_load):
+            with self.assertRaisesRegex(ValueError,'changed|snapshot'):self.stage()
+        for name in self.info['mirrors']:
+            self.assertEqual(cards.read(self.project/name)['user_saved_note'],'FOREIGN EDIT MUST SURVIVE')
+
+    def test_new_mirror_after_review_refuses_apply_without_any_writes(self):
+        stage=self.stage();new=self.project/'template-2.tmp';new.write_bytes((self.project/'draft_info.json').read_bytes())
+        with self.assertRaisesRegex(ValueError,'mirror|membership|changed'):self.apply(stage)
+        for name,raw in self.before.items():self.assertEqual((self.project/name).read_bytes(),raw)
+        self.assertTrue(new.is_file())
+
     def test_busy_and_tampered_output_or_source_never_write(self):
         stage=self.stage()
         with mock.patch.object(cards,'editor_running',return_value=True):

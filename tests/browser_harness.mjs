@@ -20,6 +20,7 @@ try{
  await page.getByRole('button',{name:'Cân âm thoại',exact:true}).click();
  await page.locator('#apply').waitFor({state:'visible'});await page.waitForFunction(()=>!document.querySelector('#apply').disabled,{timeout:60000});
  assert.ok(await page.locator('#interval-rows tr').count()>0);
+ await page.locator('#quality-summary').filter({hasText:'VAD'}).waitFor({timeout:3000});
  assert.match(await page.locator('#job-state').innerText(),/Sẵn sàng/);
  await page.locator('#interval-rows button').first().click();
  await page.getByRole('button',{name:'Sau xử lý',exact:true}).click();

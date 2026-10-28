@@ -39,6 +39,8 @@ Keep that Terminal running. The browser opens a `127.0.0.1` address on this comp
 
 Defaults: −18 LUFS speech, maximum boost/cut 12 dB, whole-master ceiling −1.5 dBTP, stereo 48 kHz PCM24. Actual post-render measurements determine attainment; exceptions are reported. Excluded intervals receive zero gain; the final limiter still protects the complete master.
 
+The UI separately reports low VAD scores, source/mix samples near full scale and measured attenuation after limiting. These are listening-review flags, not proof of clipping or calibrated recognition confidence. Music-vocal classification remains unassessed.
+
 **Audio limitations:** VAD finds voice activity; it does not separate stems, identify characters, translate or transcribe. Music/SFX mixed into speech changes level with that interval. Singing, very short or noisy speech can be misclassified. Listen and exclude as appropriate. Leveling works between phrases while preserving variation inside each phrase.
 
 **Compatibility:** readable, unencrypted local CapCut JSON schema `360000`, tested on macOS. Unknown audible effects, routing, variable speed or mute flags are refused. A source-reconstructed mix is not proof of native CapCut rendering; reports keep `editor_render_verified: false`. Not every CapCut version/project is supported.

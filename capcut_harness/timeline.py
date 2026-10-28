@@ -120,7 +120,7 @@ def inspect_audio(project):
     if cards.digest(active)!=signature:raise ValueError('Project changed during audio inspection')
     guards=dict((name,cards.digest(project/name)) for name in mirrors)
     for name in ('Timelines/project.json',cards.STATE):
-        if (project/name).exists():guards[name]=cards.digest(project/name)
+        guards[name]=cards.digest(project/name)
     return dict(project=str(project),project_id=data.get('id'),project_sha256=signature,
                 duration=data['duration']/1e6,duration_us=data['duration'],fps=data['fps'],
                 mirrors=mirrors,guards=guards,source_hashes=source_hashes,

@@ -10,6 +10,7 @@ from .process import run,check_cancel
 from .mix import RATE,BLOCK
 from .loudness import measure
 from .speech import detect
+from .quality import evidence
 
 DEFAULTS=dict(target_lufs=-18.,max_boost_db=12.,peak_dbtp=-1.5)
 
@@ -102,6 +103,7 @@ def render(analysis,out,params,excluded,progress=lambda *a:None,cancelled=lambda
         r['deviation_lu']=round(r['after_lufs']-params['target_lufs'],2) if r['after_lufs'] is not None else None
         r['target_met']=not r['excluded'] and r['deviation_lu'] is not None and abs(r['deviation_lu'])<=2
         progress('measure-after',i+1,len(rows))
+    progress('quality',0,1);quality=evidence(analysis,raw,master,out,rows,cancelled);progress('quality',1,1)
     previews={}
     for name,path in [('before',analysis['mix_path']),('after',master)]:
         preview=out/f'{name}.wav'
@@ -111,7 +113,7 @@ def render(analysis,out,params,excluded,progress=lambda *a:None,cancelled=lambda
                 samples=count,sample_rate=RATE,channels=2,duration=analysis['duration'],intervals=rows,
                 before=statistics(rows,'before_lufs'),after=statistics(rows,'after_lufs'),true_peak_dbtp=peak,
                 speech_seconds=analysis['speech_seconds'],exceptions=sum(not r['target_met'] and not r['excluded'] for r in rows),
-                source_reconstruction_only=True,editor_render_verified=False,**previews)
+                quality=quality,source_reconstruction_only=True,editor_render_verified=False,**previews)
     report['file_hashes']={str(master):cards.digest(master),**{path:cards.digest(path) for path in previews.values()}}
     report['analysis_hash']=cards.object_hash(analysis)
     write_json(out/'report.json',report);raw.unlink(missing_ok=True)

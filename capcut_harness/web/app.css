@@ -13,3 +13,5 @@
 @media(max-width:760px){.settings-panel{display:block}}
 
 .playback-panel .panel-heading{margin-bottom:4px}.playback-panel audio{margin-bottom:4px}
+
+.quality-panel h2{margin-bottom:12px}.quality-panel p{font-size:13px;margin-top:8px}.quality-panel .panel-note{color:var(--faint)}

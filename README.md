@@ -39,6 +39,8 @@ Giữ Terminal đang chạy. Trình duyệt mở địa chỉ `127.0.0.1` trên 
 
 Mặc định: thoại −18 LUFS, tăng/giảm tối đa 12 dB, peak toàn master tối đa −1,5 dBTP, stereo 48 kHz PCM24. Phép đo sau xử lý quyết định kết quả; đoạn chưa đạt được báo riêng. Gain bằng 0 ở đoạn bỏ chọn; limiter cuối vẫn bảo vệ peak toàn master.
 
+UI cũng báo riêng điểm VAD thấp, mẫu nguồn/mix sát trần và mức giảm đo sau limiter; đây là dấu hiệu cần nghe lại, không phải kết luận đã vỡ tiếng hay xác suất nhận diện chính xác. Nhạc có giọng hát chưa được phân loại.
+
 **Giới hạn âm thanh:** VAD nhận diện giọng nói, không tách nhạc, không đoán nhân vật và không dịch/chép thoại. Nhạc/SFX dính vào giọng sẽ đổi mức cùng đoạn đó. Hát, thoại quá ngắn/nhiễu có thể bị nhận nhầm; cần nghe A/B và bỏ chọn khi cần. Luồng này cân mức giữa các câu, không thay diễn xuất trong câu bằng một mức phẳng.
 
 **Tương thích hiện tại:** JSON CapCut local đọc được, không mã hóa, schema `360000`, đã kiểm thử trên macOS. Công cụ dừng với hiệu ứng âm thanh, routing, tốc độ biến thiên hoặc cờ mute chưa hiểu. Bản mix dựng lại từ nguồn chưa được coi là native render CapCut; báo cáo giữ `editor_render_verified: false`. Không đảm bảo mọi phiên bản/project CapCut đều dùng được.

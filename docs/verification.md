@@ -4,7 +4,7 @@ Platform: macOS, Python 3.12.14, NumPy 2.2.6, ONNX Runtime 1.23.2, local FFmpeg/
 
 ## Automated behavior
 
-60 unit/integration tests passed before final whole-branch review. These include the retained 30 card tests, actual FFmpeg mix and Silero VAD, bounded loudness windows, measured gain/peak/duration, strict audio coverage, exact native transaction/Undo and foreign-edit preservation, cancellation/restart/revision guards, local HTTP session/Origin/Host/media-range boundaries, CLI completion and live-service routing, and installer extraction/upgrade/failure behavior.
+66 unit/integration tests passed after the final whole-branch review and its regression fixes. These include the retained 30 card tests, actual FFmpeg mix and Silero VAD, bounded loudness windows, measured gain/peak/duration, strict audio coverage, exact native transaction/Undo and foreign-edit preservation, cancellation/restart/revision guards, local HTTP session/Origin/Host/media-range boundaries, CLI completion and live-service routing, and installer extraction/upgrade/failure behavior. A real child-process hard exit during an indexed multi-mirror Apply is recovered through service restart/Retry, followed by exact Undo. Saves during staging, new mirrors and an obsolete Apply waiting in the queue are refused.
 
 Headless Chrome exercised real generated speech through project selection, analyze, interval rows/seeking, synchronized A/B, editor-busy rejection, Apply, exact Undo, stale-project rejection and unsupported commands. Settings remain visible with no horizontal overflow at 1440/768/390. Taste inspection: 0 FAIL at those widths; deliberate independent panel heights and native audio control chrome explain two measurement warnings. See ui-design.md. No Computer Use or CapCut UI automation was used.
 
@@ -22,7 +22,7 @@ A complete 1,779.366666-second local project was analyzed without applying chang
 | True peak | — | −1.70 dBTP |
 | Accepted intervals outside ±2 LU target | — | 0 |
 
-These are **measurements of the reconstructed mix**, not a promise about every film or proof of native editor rendering. A short source/native-export comparison independently confirmed the separated-audio inventory choice. VAD can include vocals/music and miss speech; mixed music changes with speech gain. Full reports and recordings remain private on the user's machine.
+These are **measurements of the reconstructed mix**, not a promise about every film or proof of native editor rendering. A short source/native-export comparison independently confirmed the separated-audio inventory choice. VAD can include vocals/music and miss speech; mixed music changes with speech gain. Separate quality evidence retains interval VAD scores, near-full-scale samples before source timeline gain, mix near-full-scale samples and measured 20 ms RMS attenuation after limiting. These are review flags, not proof of distortion or calibrated confidence. Singing/music-vocal classification remains unassessed. Zero target deviations does not imply zero quality flags. Full reports and recordings remain private on the user's machine.
 
 Apply and Undo were verified on disposable native-schema projects, including compound/card structural preservation and byte-exact original mirror restoration. The real film was open in CapCut, so it was only read/analyzed. No actual-project write or native CapCut playback/export is claimed; `editor_render_verified` remains false.
 

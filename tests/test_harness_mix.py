@@ -46,6 +46,16 @@ class MixTest(unittest.TestCase):
         return draft({'audios': [dict(id='a', path='voice.wav')]},
                      [dict(id='audio', type='audio', segments=[segment('s', 'a', duration=2000000)])])
 
+    def test_near_full_scale_source_is_reported_before_timeline_gain(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);project=root/'project';project.mkdir()
+            wav(project/'hot.wav',np.clip(np.sin(np.arange(48000)*2*np.pi*500/48000)*2,-1,1))
+            save_project(project,draft({'audios':[dict(id='hot',path='hot.wav')]},[dict(id='t',type='audio',segments=[segment('s','hot',volume=.05)])],duration=1000000))
+            result=render_mix(inspect_audio(project),root/'mix')
+            self.assertGreater(result['source_quality'][0]['near_full_scale_samples'],1000)
+            audio=np.memmap(result['raw_path'],dtype='<f4',mode='r')
+            self.assertLess(float(np.max(np.abs(audio))),.051)
+
     def test_overlap_sums_without_normalization_and_duration_is_exact(self):
         d = self.simple(); d['tracks'][0]['segments'].append(segment('second', 'a', start=500000, duration=1000000))
         save_project(self.project, d); info = inspect_audio(self.project)

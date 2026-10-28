@@ -41,5 +41,9 @@ def detect(path,out,cancelled=lambda:False,progress=lambda *a:None):
     result=[]
     for left,right in spans:
         if result and left<result[-1]['end']:left=result[-1]['end']
-        if right-left>=.25:result.append(dict(id=f'speech-{len(result)+1:05d}',start=round(left,6),end=round(right,6)))
+        if right-left>=.25:
+            scores=np.asarray(probs[int(left*16000/512):max(int(left*16000/512)+1,int(np.ceil(right*16000/512)))])
+            mean=float(np.mean(scores));active=float(np.mean(scores>=.5))
+            result.append(dict(id=f'speech-{len(result)+1:05d}',start=round(left,6),end=round(right,6),
+                               vad_mean=round(mean,4),vad_active_fraction=round(active,4),vad_low_score=mean<.65 or active<.6))
     return result

@@ -49,6 +49,22 @@ class AudioTest(unittest.TestCase):
         self.assertEqual(len(output),samples*2)
         self.assertLess(np.max(np.abs(output[:24000])),1e-6)
 
+    def test_quality_reports_vad_scores_full_scale_mix_and_measured_limiting(self):
+        source,samples=spoken_fixture(self.root)
+        signal=np.frombuffer(subprocess.check_output(['ffmpeg','-v','error','-i',str(source),'-f','f32le','-']),dtype='<f4').reshape(-1,2).copy()
+        signal[-24000:]=np.sin(np.arange(24000)*2*np.pi*1000/48000)[:,None]
+        wav(source,signal)
+        a=analyze(source,self.root/'quality-analysis',{})
+        self.assertTrue(all(0<=r['vad_mean']<=1 for r in a['intervals']))
+        report=render(a,self.root/'quality-render',{'max_boost_db':0},[])
+        quality=report['quality']
+        self.assertGreater(quality['mix_full_scale_samples'],0)
+        self.assertGreater(quality['limiter']['attenuated_windows'],0)
+        self.assertGreater(quality['limiter']['max_rms_attenuation_db'],.5)
+        self.assertEqual(quality['music_vocal_classification'],'unassessed')
+        self.assertEqual(quality['source_clipping_assessment'],'unassessed')
+        self.assertIn('target_deviations',quality)
+
     def test_excluded_regions_and_parameters_are_validated(self):
         with self.assertRaisesRegex(ValueError,'target'):parameters({'target_lufs':-100})
         with self.assertRaisesRegex(ValueError,'Unknown'):parameters({'mystery':1})

@@ -172,7 +172,12 @@ class Service:
     def _execute(self,job,operation,progress,cancelled):
         directory=self.root/'jobs'/job['id'];project=self._project(job['project_id'])
         if operation=='apply':
-            result=transaction.apply(Path(job['stage_path']));return dict(state='applied',verification=result)
+            # Dispatch and revision creation share this lock: eligibility is atomic with mutation.
+            with self.lock:
+                if self._project(job['project_id']).get('latest_job')!=job['id']:
+                    raise ValueError('Newer review revision exists; old queued review changed and cannot apply')
+                result=transaction.apply(Path(job['stage_path']))
+                return dict(state='applied',verification=result)
         if operation=='undo':
             result=transaction.undo(Path(job['stage_path']));return dict(state='restored',verification=result)
         if operation=='analyze':
@@ -180,6 +185,7 @@ class Service:
             write_json(directory/'inventory.json',inventory)
             mixed=render_mix(inventory,directory/'mix',progress,cancelled)
             analysis=analyze(Path(mixed['path']),directory/'analysis',job['params'],progress,cancelled)
+            analysis['source_quality']=mixed['source_quality'];write_json(directory/'analysis/analysis.json',analysis)
         else:
             parent=self.store.get(job['parent'])
             inventory=cards.read(parent['inventory_path']);assert_sources_current(inventory)
