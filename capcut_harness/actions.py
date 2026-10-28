@@ -16,7 +16,7 @@ def folded(text):
 def parse_command(text,projects,project_id=None):
     if not isinstance(text,str) or not 0<len(text.strip())<=500:raise ValueError('Lệnh trống hoặc quá dài')
     normalized=folded(text.strip())
-    for pattern,action in [(r'(?:ap dung|apply)\s+([a-z0-9-]+)','dialogue.apply'),(r'(?:hoan tac|undo)\s+([a-z0-9-]+)','dialogue.undo')]:
+    for pattern,action in [(r'(?:thu lai|retry)\s+([a-z0-9-]+)','dialogue.retry'),(r'(?:ap dung|apply)\s+([a-z0-9-]+)','dialogue.apply'),(r'(?:hoan tac|undo)\s+([a-z0-9-]+)','dialogue.undo')]:
         m=re.fullmatch(pattern,normalized)
         if m:return dict(action=action,job_id=m.group(1))
     patterns=[(r'(?:can am(?: thoai)?|normalize(?: dialogue)?)\s*(.*)','dialogue.analyze'),

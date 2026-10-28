@@ -1,4 +1,64 @@
-# CapCut Cinematic Cards
+# CapCut Harness + Cinematic Cards
+
+**UI local để cân âm thoại cả phim, nghe A/B và Apply/Undo; kèm skill thêm time, location và giới thiệu nhân vật có tên + vai trò.**
+
+[English](README.en.md) · [Bản phát hành v0.2.0](https://github.com/Ductoii/capcut-cinematic-cards/releases/tag/v0.2.0) · [Bằng chứng kiểm thử](docs/verification.md) · [MIT](LICENSE)
+
+Media ở trên máy. Không cần Computer Use, API key hay tài khoản dịch vụ âm thanh. Nút bấm và ô lệnh gọi cùng một harness; ô lệnh nhận một tập câu xác định, không phải chatbot tự do. Codex hiện tại làm phần quyết định biên tập khi đặt card.
+
+## Cài harness một dòng
+
+Trên **macOS**, chuẩn bị **Python 3.10–3.13, FFmpeg và ffprobe** trên PATH. Bộ cài cài NumPy/ONNX Runtime trong môi trường riêng, không sửa Python chung. macOS là nền tảng đã kiểm thử; Linux/Windows chưa được xác minh đầy đủ.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.2.0/install-harness.py | python3
+```
+
+Nếu không rành Terminal, gửi link repo cho **Codex local trên máy có project** và nói:
+
+> Cài CapCut Harness v0.2.0, chuẩn bị dependency còn thiếu rồi mở UI local giúp tôi. Không computer use.
+
+Bộ cài lấy đúng tag v0.2.0, tạo môi trường riêng và cài **hai skill** vào `~/.agents/skills`. Chạy lại cùng lệnh sẽ giữ release cũ và sao lưu skill/launcher; thư mục không do bộ cài quản lý được giữ nguyên. Không clone repo, không sửa JSON. Nếu Codex chưa thấy skill mới, khởi động lại Codex.
+
+Mở UI bằng:
+
+```bash
+~/.local/bin/capcut-harness
+```
+
+Giữ Terminal đang chạy. Trình duyệt mở địa chỉ `127.0.0.1` trên chính máy đó; chạy lại lệnh sẽ mở service đang chạy. `Ctrl+C` dừng an toàn. Mở lại lệnh để xem các công việc đã lưu. Không xóa `~/.local/share/capcut-harness`: đó là nơi chứa bản nghe, báo cáo và backup phục vụ Undo. Có thể tốn vài GB cho một phim dài.
+
+## Cân thoại bằng UI
+
+1. Chọn project ở thanh trên. Nếu chưa thấy, chọn **Thêm project** và gửi đường dẫn thư mục project CapCut; có thể nhờ Codex tìm đúng thư mục giúp.
+2. Bấm **Cân âm thoại**. Việc này đọc timeline và media, nhận diện giọng nói, đo từng khoảng rồi tạo bản nghe. Project chưa thay đổi. Có tiến độ, hủy và thử lại khi lỗi/gián đoạn.
+3. Xem độ chênh P10–P90, trung vị thoại và peak thực. Chọn một khoảng trong bảng để nghe; nút **Bản gốc / Sau xử lý** giữ cùng vị trí nghe.
+4. Bỏ chọn khoảng nhận nhầm hoặc đổi mục tiêu/mức tăng/trần peak rồi bấm **Cập nhật bản nghe**. Chỉ revision hiện tại được Apply; bản cũ vẫn nằm trong **Công việc**.
+5. Nghe và duyệt bản xử lý. **Lưu rồi đóng CapCut**; bấm **Áp dụng vào project**. Harness thêm một track master audio ở ngoài clip ghép, tắt âm các đoạn gốc đang nghe được để tránh phát trùng. Giữ nguyên cấu trúc hình, clip ghép và text card.
+6. Mở lại CapCut để kiểm tra nghe/xem thực tế. Muốn trở về: lưu, đóng CapCut và bấm **Hoàn tác** ở đúng công việc đã Apply. Nếu project đã thay đổi, công cụ dừng để giữ chỉnh sửa của bạn; nhờ Codex đối chiếu backup, đừng ghi đè draft thủ công.
+
+Mặc định: thoại −18 LUFS, tăng/giảm tối đa 12 dB, peak toàn master tối đa −1,5 dBTP, stereo 48 kHz PCM24. Phép đo sau xử lý quyết định kết quả; đoạn chưa đạt được báo riêng. Gain bằng 0 ở đoạn bỏ chọn; limiter cuối vẫn bảo vệ peak toàn master.
+
+**Giới hạn âm thanh:** VAD nhận diện giọng nói, không tách nhạc, không đoán nhân vật và không dịch/chép thoại. Nhạc/SFX dính vào giọng sẽ đổi mức cùng đoạn đó. Hát, thoại quá ngắn/nhiễu có thể bị nhận nhầm; cần nghe A/B và bỏ chọn khi cần. Luồng này cân mức giữa các câu, không thay diễn xuất trong câu bằng một mức phẳng.
+
+**Tương thích hiện tại:** JSON CapCut local đọc được, không mã hóa, schema `360000`, đã kiểm thử trên macOS. Công cụ dừng với hiệu ứng âm thanh, routing, tốc độ biến thiên hoặc cờ mute chưa hiểu. Bản mix dựng lại từ nguồn chưa được coi là native render CapCut; báo cáo giữ `editor_render_verified: false`. Không đảm bảo mọi phiên bản/project CapCut đều dùng được.
+
+## Ra lệnh qua Codex hoặc ô lệnh
+
+```text
+$capcut-harness
+Cân âm thoại project 1027, cho tôi nghe A/B và xem đoạn nào còn lệch.
+Giữ nguyên hình, clip ghép và card.
+```
+
+Các câu được hỗ trợ: `phân tích <project>`, `cân âm thoại <project>`, `áp dụng <job>`, `hoàn tác <job>`, `thử lại <job>`. Tên trùng phải chọn project trong UI. Câu chưa hỗ trợ không chạy gì. Tab **Cinematic cards** liệt kê text đang có; việc phân tích nhân vật/đặt card dùng skill ở phần dưới.
+
+CLI dành cho Codex: `capcut-harness --help`, `capcut-harness inspect /path/to/project`, `capcut-harness command "cân âm thoại Tên phim"`. CLI chờ kết quả và dùng chung service khi UI đang mở. [Hướng dẫn kỹ thuật](docs/harness-development.md).
+
+## Cinematic cards độc lập
+
+Phần dưới là hướng dẫn đầy đủ cho công cụ card; lệnh cài v0.1.1 chỉ cài skill card, không cài harness/audio. Bộ cài harness v0.2.0 ở trên đã bao gồm skill này.
+
 
 **Bảo Codex thêm time card, location card và giới thiệu nhân vật cho phim CapCut — giữ nguyên clip ghép.**
 

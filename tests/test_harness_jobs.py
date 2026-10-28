@@ -73,6 +73,20 @@ class JobsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'project|Project'):
             service.dispatch(dict(action='dialogue.retry',job_id='a1'))
 
+    def test_retry_recovers_interrupted_mutation_using_same_stage(self):
+        p=self.project();service=Service(self.root/'state',[p.parent]);project=service.projects()[0]
+        service.store.save(dict(id='ab12',state='applying',operation='apply',project_id=project['id'],params={},created_at='2026-10-28',stage_path='saved-stage'))
+        service.registry[project['id']]['latest_job']='ab12';service.store.write(service.root/'projects.json',service.registry);service.close()
+        restarted=Service(self.root/'state',[p.parent]);self.addCleanup(restarted.close)
+        operations=[]
+        def execute(job,operation,*args):
+            operations.append((job['id'],operation,job.get('stage_path')));return dict(state='applied')
+        with mock.patch.object(restarted,'_execute',side_effect=execute):
+            ticket=restarted.dispatch(dict(action='dialogue.retry',job_id='ab12'))
+            result=wait_job(restarted,ticket['job_id'],('applied','failed'))
+        self.assertEqual(result['state'],'applied',result)
+        self.assertEqual(operations,[('ab12','apply','saved-stage')])
+
     def test_worker_serializes_jobs_and_cancellation_reaches_running_job(self):
         p=self.project();service=Service(self.root/'state',[p.parent]);self.addCleanup(service.close)
         project=service.projects()[0];entered=threading.Event();release=threading.Event();order=[]

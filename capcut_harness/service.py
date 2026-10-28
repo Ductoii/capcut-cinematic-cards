@@ -106,6 +106,11 @@ class Service:
         if name=='dialogue.retry':
             old=self.store.get(a['job_id'])
             if old['state'] not in ('failed','cancelled','interrupted'):raise ValueError('Retry requires an unfinished/failed job')
+            if old['state']=='interrupted' and old.get('operation') in ('apply','undo'):
+                operation=old['operation']
+                if operation=='apply' and self._project(old['project_id']).get('latest_job')!=old['id']:raise ValueError('Newer review revision exists; recover the saved transaction before new work')
+                self.store.update(old['id'],state='queued',error=None,error_type=None)
+                self.queue.put((old['id'],operation));return dict(job_id=old['id'],queued=True,recovering=True)
             return self._new('analyze',old['project_id'],old.get('params',{}))
         if name=='dialogue.analyze':return self._new('analyze',a['project_id'],parameters(a.get('params',{})))
         if name=='dialogue.render':

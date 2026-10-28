@@ -1,4 +1,64 @@
-# CapCut Cinematic Cards
+# CapCut Harness + Cinematic Cards
+
+**A local browser workspace for whole-film dialogue leveling, synchronized A/B and Apply/Undo, plus evidence-led time, location and character name + role cards.**
+
+[Tiếng Việt](README.md) · [v0.2.0 release](https://github.com/Ductoii/capcut-cinematic-cards/releases/tag/v0.2.0) · [Verification](docs/verification.md) · [MIT](LICENSE)
+
+Media stays on your computer. No Computer Use, API key or audio cloud account. Buttons and the command box share one harness. Commands use a finite vocabulary, not unrestricted AI chat. Your current Codex session makes editorial decisions for cards.
+
+## One-line harness installation
+
+On **macOS**, first have **Python 3.10–3.13, FFmpeg and ffprobe** on PATH. NumPy and ONNX Runtime go into a private environment; global Python is unchanged. macOS is the tested platform; Linux/Windows have not been fully validated.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.2.0/install-harness.py | python3
+```
+
+Not comfortable with Terminal? Give this repository link to **local Codex on the computer containing your project** and say:
+
+> Install CapCut Harness v0.2.0, prepare missing dependencies and open its local UI. No Computer Use.
+
+The installer downloads the pinned v0.2.0 tag, builds a private environment, and installs **both skills** into `~/.agents/skills`. Reinstalling keeps the previous release and backs up the skill/launcher. Unmanaged locations are preserved. No cloning or JSON edits. Restart Codex if it has not discovered the new skill.
+
+Launch:
+
+```bash
+~/.local/bin/capcut-harness
+```
+
+Keep that Terminal running. The browser opens a `127.0.0.1` address on this computer. Launching again opens the existing service. `Ctrl+C` safely stops it; relaunch to see saved jobs. Keep `~/.local/share/capcut-harness`: it contains listening versions, reports and Undo backups. A long film can use several GB.
+
+## Dialogue workflow
+
+1. Choose a project in the top bar. Use **Thêm project** (Add project) if missing; local Codex can locate its folder for you.
+2. Press **Cân âm thoại** (Level dialogue). It reads the timeline/media, finds voice activity, measures intervals and prepares listening files. The project is unchanged. Progress, cancel and retry are available.
+3. Review P10–P90 spread, median speech and true peak. Click a table interval to listen; **Bản gốc / Sau xử lý** switches original/processed at the same position.
+4. Uncheck false detections or change target/maximum gain/ceiling, then press **Cập nhật bản nghe** (Update listening version). Apply accepts the latest review revision; older jobs remain in **Công việc** (Jobs).
+5. Listen and approve the result. **Save and close CapCut**, then press **Áp dụng vào project** (Apply). The harness adds one root audio master and mutes audible original root segments to avoid duplicate playback. Video, nested compound and card structures are preserved.
+6. Reopen CapCut and check actual playback. To undo, save and close CapCut and press **Hoàn tác** on the applied job. If the project changed, restoration stops to preserve your edits; ask Codex to compare backups instead of manually overwriting drafts.
+
+Defaults: −18 LUFS speech, maximum boost/cut 12 dB, whole-master ceiling −1.5 dBTP, stereo 48 kHz PCM24. Actual post-render measurements determine attainment; exceptions are reported. Excluded intervals receive zero gain; the final limiter still protects the complete master.
+
+**Audio limitations:** VAD finds voice activity; it does not separate stems, identify characters, translate or transcribe. Music/SFX mixed into speech changes level with that interval. Singing, very short or noisy speech can be misclassified. Listen and exclude as appropriate. Leveling works between phrases while preserving variation inside each phrase.
+
+**Compatibility:** readable, unencrypted local CapCut JSON schema `360000`, tested on macOS. Unknown audible effects, routing, variable speed or mute flags are refused. A source-reconstructed mix is not proof of native CapCut rendering; reports keep `editor_render_verified: false`. Not every CapCut version/project is supported.
+
+## Codex and command box
+
+```text
+$capcut-harness
+Level dialogue in project 1027, prepare A/B and show remaining deviations.
+Preserve picture, compound clips and cards.
+```
+
+Supported commands: `phân tích <project>` / `inspect`, `cân âm thoại <project>` / `normalize dialogue`, `áp dụng <job>` / `apply`, `hoàn tác <job>` / `undo`, `thử lại <job>` / `retry`. Select ambiguous project names in the UI. Unknown commands do nothing. The Cards view lists existing text; use the card skill below for character/scene analysis and placement.
+
+CLI: `capcut-harness --help`, `capcut-harness inspect /path/to/project`, `capcut-harness command "normalize dialogue Film name"`. CLI waits for completion and connects to the running UI service. [Developer guide](docs/harness-development.md).
+
+## Standalone cinematic cards
+
+The guide below covers the standalone cards tool. Its v0.1.1 installer installs only that skill, without the harness/audio environment. The v0.2.0 harness installer above already includes it.
+
 
 [Tiếng Việt / full guide](README.md)
 

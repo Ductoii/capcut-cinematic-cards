@@ -154,8 +154,11 @@ def apply(directory):
                 write_json(directory/'journal.json',dict(state='applying',written=written))
             result=verify(directory);write_json(directory/'journal.json',dict(state='applied',written=written));return result
         except BaseException:
+            # A foreign draft may still refer to our master. Preserve its dependency.
+            foreign=any(cards.digest(safe_target(project,n)) not in (old,meta['after'][n]) for n,old in meta['before'].items())
             # Also restore known partial writes from a prior interrupted invocation.
             for name in reversed(list(meta['before'])):
+                if name==meta['resource'] and foreign:continue
                 target=safe_target(project,name)
                 if cards.digest(target)==meta['after'][name]:
                     if meta['before'][name] is None:target.unlink(missing_ok=True)

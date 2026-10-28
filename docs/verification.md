@@ -1,0 +1,31 @@
+# v0.2.0 verification evidence
+
+Platform: macOS, Python 3.12.14, NumPy 2.2.6, ONNX Runtime 1.23.2, local FFmpeg/ffprobe and Chrome. First supported editor format: readable unencrypted CapCut JSON schema 360000. Other OS/editor versions remain unverified.
+
+## Automated behavior
+
+60 unit/integration tests passed before final whole-branch review. These include the retained 30 card tests, actual FFmpeg mix and Silero VAD, bounded loudness windows, measured gain/peak/duration, strict audio coverage, exact native transaction/Undo and foreign-edit preservation, cancellation/restart/revision guards, local HTTP session/Origin/Host/media-range boundaries, CLI completion and live-service routing, and installer extraction/upgrade/failure behavior.
+
+Headless Chrome exercised real generated speech through project selection, analyze, interval rows/seeking, synchronized A/B, editor-busy rejection, Apply, exact Undo, stale-project rejection and unsupported commands. Settings remain visible with no horizontal overflow at 1440/768/390. Taste inspection: 0 FAIL at those widths; deliberate independent panel heights and native audio control chrome explain two measurement warnings. See ui-design.md. No Computer Use or CapCut UI automation was used.
+
+The managed installer was run in a clean directory containing spaces: private venv, dependency installation, ONNX model inference and launcher startup passed. A wheel was built with the bundled card backend, model/notices, web assets and font/notices. Public-tag installation is checked again after publication.
+
+## Real film, read-only
+
+A complete 1,779.366666-second local project was analyzed without applying changes. It contains 86 actual audible source segments; 75 separated embedded video tracks are omitted to avoid duplicating detached audio. There were no unsupported audible semantics. The output contains 85,409,600 stereo samples at 48 kHz.
+
+| Measurement | Original | Processed |
+|---|---:|---:|
+| Voice-activity intervals | 322 | 322 |
+| Speech median | −12.98 LUFS | −18.00 LUFS |
+| Speech P10–P90 spread | 6.03 LU | 0.05 LU |
+| True peak | — | −1.70 dBTP |
+| Accepted intervals outside ±2 LU target | — | 0 |
+
+These are **measurements of the reconstructed mix**, not a promise about every film or proof of native editor rendering. A short source/native-export comparison independently confirmed the separated-audio inventory choice. VAD can include vocals/music and miss speech; mixed music changes with speech gain. Full reports and recordings remain private on the user's machine.
+
+Apply and Undo were verified on disposable native-schema projects, including compound/card structural preservation and byte-exact original mirror restoration. The real film was open in CapCut, so it was only read/analyzed. No actual-project write or native CapCut playback/export is claimed; `editor_render_verified` remains false.
+
+## Release boundaries
+
+The public repository contains code, documentation, tests, the licensed VAD model and local font. It excludes private project/media paths, film audio/video, generated job outputs, installation environments, recordings and credentials. The old standalone v0.1.1 card installer remains available unchanged. The v0.2.0 installer adds the full harness and both skills.

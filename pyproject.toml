@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capcut-local-harness"
+version = "0.2.0"
+description = "Local dialogue review and reversible cinematic cards for readable CapCut projects"
+requires-python = ">=3.10,<3.14"
+license = "MIT"
+dependencies = ["numpy==2.2.6", "onnxruntime==1.23.2"]
+
+[project.scripts]
+capcut-harness = "capcut_harness.__main__:main"
+
+[tool.setuptools]
+packages = ["capcut_harness", "capcut_harness.cards_backend"]
+
+[tool.setuptools.package-dir]
+"capcut_harness.cards_backend" = "skills/capcut-cinematic-cards/scripts"
+
+[tool.setuptools.package-data]
+capcut_harness = ["assets/*", "web/*.html", "web/*.css", "web/*.js", "web/fonts/*"]

@@ -79,6 +79,21 @@ class TransactionTest(unittest.TestCase):
         for name,raw in self.before.items():self.assertEqual((self.project/name).read_bytes(),raw)
         self.assertFalse((self.project/tx.STATE).exists())
 
+    def test_rollback_keeps_master_referenced_by_foreign_draft(self):
+        stage=self.stage();real=tx.atomic_copy;calls=[]
+        def fail(target,source):
+            calls.append(str(target))
+            if len(calls)==3:
+                draft=self.project/'draft_info.json'
+                draft.write_bytes(draft.read_bytes()+b' ')
+                raise OSError('foreign edit during write')
+            return real(target,source)
+        with mock.patch.object(tx,'atomic_copy',side_effect=fail):
+            with self.assertRaisesRegex(OSError,'foreign edit'):self.apply(stage)
+        data=cards.read(self.project/'draft_info.json')
+        resource=Path(data['materials']['audios'][-1]['path'])
+        self.assertTrue(resource.is_file(),'Foreign draft still references the generated master')
+
     def test_restore_refuses_foreign_edit_and_running_editor(self):
         stage=self.stage();self.apply(stage)
         with mock.patch.object(cards,'editor_running',return_value=True):
