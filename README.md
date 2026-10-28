@@ -84,6 +84,18 @@ Project, ảnh, tiếng, font và bản sao lưu ở local; installer chỉ tả
 
 ## Giới hạn đã biết
 
+### Đang phát triển trên main (chưa nằm trong installer v0.1.1)
+
+- `probe` xử lý rõ đuôi video ngắn hơn audio/container dưới một frame, ghi timestamp mẫu thực tế và cảnh báo; không che một trim sai dài hơn bằng cách lặp hình. Xuất JPEG có pixel format tương thích.
+- `restyle` giữ chữ, vị trí, timing, keyframe, hiệu ứng và các trường CapCut đã chuẩn hóa. Khi hash đã đổi, Codex phải đối chiếu bản nháp trước và ghi nhận xét với hash hiện tại; không cập nhật ownership trước khi ghi.
+- Rà đủ nhân vật chính bằng `character_review`, hỗ trợ thẻ cho cặp nhân vật, ghi lý do cho từng người bỏ qua. Thẻ bối cảnh ưu tiên bám fade gốc; fade ngắn có thể nối chữ sang cảnh sau mà không kéo đen.
+- Có thể tái dùng fade-in native đã có và đã được xác minh ở local, đồng bộ cả tên và vai trò; không tự tải hoặc bịa ID effect. `ending` dành cho chữ kết trên hình cuối có sẵn.
+- Khi CapCut còn chạy nền, hướng dẫn lưu rồi thoát hẳn ứng dụng; trên macOS dùng Cmd+Q.
+
+Xem [tham chiếu lệnh và plan](skills/capcut-cinematic-cards/references/tool.md). Các kiểm tra dữ liệu vẫn không xác nhận playback/render native CapCut.
+
+### Bản đã phát hành
+
 - Chỉ ghi draft JSON **không mã hóa, schema `360000`**. Định dạng khác sẽ dừng; không đổi schema bằng tay để vượt kiểm tra.
 - Đường dẫn mặc định hỗ trợ tìm project macOS/Windows; có thể truyền đường dẫn chính xác. Mã xử lý file dùng Python đa nền tảng. Chạy file và media đã được kiểm tra trên macOS; chưa xác minh CapCut native trên Windows/Linux.
 - Hỗ trợ map compound lồng, trim và tốc độ cố định. Reverse, loop, curve speed và compound ngoài chưa được map; Codex phải bỏ/defer vị trí thiếu bằng chứng.

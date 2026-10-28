@@ -257,6 +257,211 @@ class CardsTest(unittest.TestCase):
         self.apply(stage)
         self.assertTrue(self.tool.verify(stage)['verified'])
 
+    def saved_titles(self):
+        first = self.stage()
+        self.apply(first)
+        return self.tool.read(self.paths[0])
+
+    def save_mirrors(self, data):
+        for path in self.paths:
+            path.write_bytes(self.tool.encoded(data))
+        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
+
+    def review_saved_ownership(self):
+        report = self.tool.inspect(self.project)['ownership']
+        self.plan['ownership_review'] = {**report, 'findings': 'Reviewed saved defaults, moved title and user animation against the previous staged draft.'}
+
+    def restyle(self, name='restyle'):
+        return self.tool.stage(self.project, copy.deepcopy(self.plan), self.root/name, self.font, preserve_owned=True)
+
+    def test_restyle_preserves_saved_text_position_timing_defaults_and_user_effect(self):
+        data = self.saved_titles()
+        material = data['materials']['texts'][0]
+        material['content'] = material['content'].replace('THE NEXT MORNING', 'USER WORDING')
+        material['caption_template_info'] = {'saved_default': True}
+        material['name'] = 'User clip label'
+        segment = data['tracks'][-2]['segments'][0]
+        segment['target_timerange']['start'] = 7500000
+        segment['clip']['transform']['x'] = -.4
+        segment['extra_material_refs'] = ['user-animation']
+        data['materials']['material_animations'] = [{'id': 'user-animation', 'animations': []}]
+        # The role remains synced, with its independent position preserved too.
+        data['tracks'][-1]['segments'][0]['target_timerange']['start'] = 7500000
+        data['tracks'][-1]['segments'][0]['clip']['transform']['x'] = -.3
+        self.save_mirrors(data)
+        with self.assertRaisesRegex(ValueError, 'ownership_review'):
+            self.restyle()
+        self.review_saved_ownership()
+        self.plan['style'] = {'title_color': '#D3E4EF'}
+        before = [p.read_bytes() for p in self.paths]
+        stage = self.restyle()
+        self.assertEqual([p.read_bytes() for p in self.paths], before)
+        self.apply(stage)
+        out = self.tool.read(self.paths[0])
+        self.assertEqual(out['tracks'], data['tracks'])
+        self.assertEqual(out['materials']['material_animations'], data['materials']['material_animations'])
+        updated = out['materials']['texts'][0]
+        self.assertIn('USER WORDING', updated['content'])
+        self.assertEqual(updated['caption_template_info'], {'saved_default': True})
+        self.assertEqual(updated['name'], 'User clip label')
+        self.assertEqual(updated['text_color'], '#D3E4EF')
+        self.assertTrue(self.tool.verify(stage)['verified'])
+
+    def test_restyle_review_is_stale_after_another_saved_edit(self):
+        data = self.saved_titles()
+        data['materials']['texts'][0]['saved_default'] = True
+        self.save_mirrors(data); self.review_saved_ownership()
+        data['materials']['texts'][0]['saved_default'] = False
+        self.save_mirrors(data)
+        with self.assertRaisesRegex(ValueError, 'stale'):
+            self.restyle()
+
+    def test_restyle_does_not_reclaim_deleted_owned_text(self):
+        data = self.saved_titles()
+        data['materials']['texts'].pop()
+        self.save_mirrors(data); self.review_saved_ownership()
+        with self.assertRaisesRegex(ValueError, 'removed'):
+            self.restyle()
+
+    def test_restyle_does_not_claim_user_segment_added_inside_owned_track(self):
+        data = self.saved_titles()
+        data['tracks'][-2]['segments'].append(dict(id='user-segment', material_id='user-material',
+                                                   target_timerange={'start': 14000000, 'duration': 3000000}))
+        data['materials']['texts'].append(dict(id='user-material', content='keep'))
+        self.save_mirrors(data); self.review_saved_ownership()
+        with self.assertRaisesRegex(ValueError, 'membership changed'):
+            self.restyle()
+        self.assertEqual(self.tool.read(self.paths[0]), data)
+
+    def test_restyle_preserves_saved_segment_order(self):
+        second = copy.deepcopy(self.plan['cards'][0]); second.update(id='second', start=14)
+        second['evidence'].update(start=13, end=19)
+        self.plan['cards'].append(second)
+        data = self.saved_titles()
+        data['tracks'][-2]['segments'].reverse()
+        self.save_mirrors(data); self.review_saved_ownership()
+        stage = self.restyle(); self.apply(stage)
+        self.assertEqual(self.tool.read(self.paths[0])['tracks'], data['tracks'])
+
+    def test_restyle_adds_missing_intro_without_removing_omitted_existing_cards(self):
+        data = self.saved_titles()
+        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
+        new = copy.deepcopy(self.plan['cards'][0])
+        new.update(id='new-intro', title='Mira Vale', detail='Restorer', start=14, duration=3.2, kind='character')
+        new['evidence'].update(start=13, end=19, character_identity='Confirmed script identity.', first_appearance='Reviewed earlier scenes.')
+        self.plan['cards'] = [new]
+        stage = self.restyle()
+        self.apply(stage)
+        out = self.tool.read(self.paths[0])
+        self.assertEqual(len(out['tracks'][-2]['segments']), 2)
+        self.assertEqual(out['materials']['texts'][:2], data['materials']['texts'])
+
+    def test_restyle_rejects_new_card_overlapping_an_unlisted_owned_card(self):
+        self.saved_titles()
+        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
+        self.plan['cards'][0]['id'] = 'new-overlap'
+        with self.assertRaisesRegex(ValueError, 'overlaps an existing'):
+            self.restyle()
+
+    def test_restyle_preserves_unowned_title_added_to_new_text_collection(self):
+        # Initial edits on older drafts may create materials.texts themselves.
+        self.original['materials'].pop('texts')
+        self.save_mirrors(self.original)
+        data = self.saved_titles()
+        data['materials']['texts'].append({'id': 'user-added-text', 'content': 'keep exactly'})
+        self.save_mirrors(data)
+        stage = self.restyle()
+        self.apply(stage)
+        self.assertIn({'id': 'user-added-text', 'content': 'keep exactly'}, self.tool.read(self.paths[0])['materials']['texts'])
+        self.assertTrue(self.tool.verify(stage)['verified'])
+
+    def test_character_cast_review_requires_explicit_coverage_and_supports_pair(self):
+        card = self.character_card()
+        self.plan['introduce_characters'] = True
+        with self.assertRaisesRegex(ValueError, 'every principal'):
+            self.stage()
+        card['characters'] = ['mira', 'leo']
+        self.plan['character_review'] = [dict(id='mira', name='Mira Vale', status='introduced', card_id=card['id']),
+                                         dict(id='leo', name='Leo Vale', status='omitted', reason='Identity remains hidden.')]
+        with self.assertRaisesRegex(ValueError, 'cast IDs'):
+            self.stage()
+        self.plan['character_review'][1] = dict(id='leo', name='Leo Vale', status='introduced', card_id=card['id'])
+        card['title'] = 'Mira & Leo Vale'
+        self.stage()
+
+    def test_character_cast_omissions_need_reasons(self):
+        self.character_card()['characters'] = ['mira']
+        self.plan['character_review'] = [dict(id='mira', name='Mira Vale', status='introduced', card_id='morning'),
+                                         dict(id='leo', name='Leo Vale', status='omitted')]
+        with self.assertRaisesRegex(ValueError, 'specific reason'):
+            self.stage()
+
+    def test_cast_review_rejects_introducing_the_same_principal_twice(self):
+        card = self.character_card(); card['characters'] = ['mira']
+        self.plan['character_review'] = [dict(id='mira', name='Mira Vale', status='introduced', card_id='morning')]
+        second = copy.deepcopy(card); second.update(id='second-intro', start=14)
+        second['evidence'].update(start=13, end=19)
+        self.plan['cards'].append(second)
+        with self.assertRaisesRegex(ValueError, 'each principal once'):
+            self.stage()
+
+    def test_restyle_wording_change_is_explicit_and_removed_cards_stay_protected(self):
+        self.saved_titles()
+        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
+        self.plan['cards'][0].update(title='CUSTOM HEADING', replace_text=True)
+        stage = self.restyle()
+        self.apply(stage)
+        self.assertIn('CUSTOM HEADING', self.tool.read(self.paths[0])['materials']['texts'][0]['content'])
+
+    def native_fade_fixture(self, data):
+        folder = self.root/'existing-fade'; folder.mkdir()
+        resource = folder/'config.json'; resource.write_text('{"fixture":true}')
+        data['materials']['material_animations'] = [{'id': 'existing-in', 'animations': [dict(type='in', path=str(folder), resource_id='existing-resource')]}]
+        segment = data['tracks'][-2]['segments'][0]
+        segment['extra_material_refs'] = ['existing-in']
+        self.plan['native_fade_in'] = dict(material_id='existing-in', source_segment_id=segment['id'],
+                                           review='Reviewed local existing fade-in, not a guessed effect.', files=[str(resource)])
+        return resource
+
+    def test_native_fade_reuses_existing_asset_on_both_lines_and_pins_resource(self):
+        data = self.saved_titles()
+        resource = self.native_fade_fixture(data)
+        self.save_mirrors(data); self.review_saved_ownership()
+        stage = self.restyle()
+        out = self.tool.read(stage/'draft.json')
+        self.assertEqual(out['materials']['material_animations'], data['materials']['material_animations'])
+        self.assertTrue(all(s['extra_material_refs'] == ['existing-in'] for t in out['tracks'][-2:] for s in t['segments']))
+        resource.write_text('changed after review')
+        with self.assertRaisesRegex(ValueError, 'evidence|changed'):
+            self.apply(stage)
+
+    def test_native_fade_rejects_invented_resource_or_wrong_source_segment(self):
+        data = self.saved_titles()
+        self.native_fade_fixture(data)
+        self.save_mirrors(data); self.review_saved_ownership()
+        self.plan['native_fade_in']['source_segment_id'] = 'not-a-real-segment'
+        with self.assertRaisesRegex(ValueError, 'source text segment'):
+            self.restyle()
+
+    def test_native_fade_never_replaces_a_different_user_animation(self):
+        data = self.saved_titles()
+        self.native_fade_fixture(data)
+        data['materials']['material_animations'].append({'id': 'other-animation', 'animations': []})
+        data['tracks'][-1]['segments'][0]['extra_material_refs'] = ['other-animation']
+        self.save_mirrors(data); self.review_saved_ownership()
+        with self.assertRaisesRegex(ValueError, 'different existing'):
+            self.restyle()
+        self.assertEqual(self.tool.read(self.paths[0]), data)
+
+    def test_ending_is_native_text_without_timeline_extension(self):
+        self.plan['cards'][0].update(kind='ending', title='THE END', detail='', start=16, duration=3.6, layout='center')
+        self.plan['cards'][0]['evidence'].update(start=12, end=20)
+        stage = self.stage()
+        data = self.tool.read(stage/'draft.json')
+        self.assertEqual(data['duration'], self.original['duration'])
+        self.assertEqual(data['tracks'][:2], self.original['tracks'])
+        self.assertEqual(len(data['materials']['videos']), len(self.original['materials']['videos']))
+
 
 if __name__ == '__main__':
     unittest.main()
