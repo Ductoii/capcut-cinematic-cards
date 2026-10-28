@@ -128,7 +128,15 @@ def validate_plan(plan, data, signature, font):
         require(0 <= start < end <= data['duration']/1e6 and interval.get('reason'), 'Invalid protected range')
     for card in cards:
         require(card.get('kind', 'time-location') in ('time', 'location', 'time-location', 'character'), 'Unknown card kind')
-        card['_style'] = resolve_style({**plan.get('style', {}), **card.get('style', {})})
+        selected_style = {**plan.get('style', {}), **card.get('style', {})}
+        defaults = {}
+        if card.get('kind') == 'character':
+            defaults = dict(title_size=6.2, detail_size=3.8, title_spacing=.08, detail_spacing=.12)
+            if selected_style.get('theme', 'heritage-drama') == 'heritage-drama':
+                defaults['detail_color'] = '#D4CDBE'
+            if card.get('detail'):
+                card.setdefault('y', -.64 if card.get('layout', 'lower-left') == 'lower-left' else .035)
+        card['_style'] = resolve_style({**defaults, **selected_style})
         ident = card.get('id', '')
         require(bool(re.fullmatch(r'[A-Za-z0-9_-]{1,80}', ident)) and ident not in ids, 'Each card needs a unique stable id')
         ids.add(ident)
@@ -154,6 +162,8 @@ def validate_plan(plan, data, signature, font):
         require(isinstance(proof, dict) and proof.get('visual_review') and proof.get('dialogue_review'), 'Review actual images and dialogue, recording findings')
         if card.get('kind') == 'character':
             require(proof.get('character_identity') and proof.get('first_appearance'), 'Character identity and first appearance must be reviewed; do not invent a name from a face')
+            omission = proof.get('role_omission_reason')
+            require(card.get('detail', '').strip() or (isinstance(omission, str) and omission.strip()), 'Character role required in detail; document role_omission_reason for names-only requests, unknown roles or spoilers')
         require(number(proof.get('start'), 'review start') <= left and number(proof.get('end'), 'review end') >= right, 'Evidence window does not cover the card')
         require(isinstance(proof.get('frames'), list) and bool(proof['frames']), 'Review frame evidence is required')
         for frame in proof['frames']:

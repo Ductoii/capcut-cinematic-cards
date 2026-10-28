@@ -33,7 +33,7 @@ Plan example, wholly fictional (Codex fills actual hashes, absolute paths and fi
     "duration": 3.4,
     "layout": "lower-left",
     "x": -0.52,
-    "y": -0.66,
+    "y": -0.64,
     "evidence": {
       "start": 116,
       "end": 127,
@@ -47,7 +47,9 @@ Plan example, wholly fictional (Codex fills actual hashes, absolute paths and fi
 }
 ```
 
-Kinds: `time`, `location`, `time-location` (default), `character`. Character evidence requires `character_identity` and `first_appearance`; the helper validates their presence, not their truth. All evidence findings are the assistant's responsibility. A character name must never be guessed merely to pass validation.
+Kinds: `time`, `location`, `time-location` (default), `character`. Character evidence requires `character_identity` and `first_appearance`; the helper validates their presence, not their truth. Character cards require a concise established role in `detail`. Omit it only with `evidence.role_omission_reason`, such as an explicit names-only request, unknown role or a spoiler. All evidence findings are the assistant's responsibility. Names and roles must never be guessed merely to pass validation.
+
+Character defaults: name size 6.2, role size 3.8, spacing 0.08/0.12. Heritage drama uses secondary color `#D4CDBE`; other themes retain their secondary palette. When a lower-left character card includes a role and `y` is omitted, the name is placed at -0.64 and role at -0.77. Global/card style and explicit coordinates override these defaults. Time/location defaults are unchanged.
 
 Titles are one line, max 32 characters; detail max 48. Durations 2.8–8s, normally 3.2–3.6. Shorten text instead of shrinking it excessively. Cards cannot overlap each other or declared protected intervals (+150ms buffer). Boundaries are snapped to project fps. Coordinates within ±0.82; detail sits 0.13 below the main line and must remain in bounds. Frame review is still needed for actual text width.
 

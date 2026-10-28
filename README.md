@@ -11,18 +11,18 @@
 **Mac/Linux**, có Python 3.10 trở lên:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.0/install.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.1/install.py | python3
 ```
 
 **Windows PowerShell**, có Python 3.10 trở lên:
 
 ```powershell
-(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.0/install.py).Content | py -3 -
+(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.1/install.py).Content | py -3 -
 ```
 
 Không biết mở Terminal? Dán link repo này vào **Codex local trên máy có project**, nói: **“Cài skill này cho tôi và chuẩn bị dependency để dùng với CapCut.”** Codex có thể thực hiện lệnh cài giúp bạn. Lệnh tải và chạy mã nguồn công khai trong repo; có thể đọc [installer](install.py) trước khi chạy.
 
-Skill được cài vào `~/.agents/skills/capcut-cinematic-cards` theo [quy ước skill của Codex](https://learn.chatgpt.com/docs/build-skills). Nếu chưa xuất hiện, khởi động lại Codex. Không cần clone repo hoặc sửa JSON. Chạy lại lệnh để cài lại bản 0.1.0; bản cũ được sao lưu. Lệnh được ghim phiên bản, không tự cập nhật sang bản mới.
+Skill được cài vào `~/.agents/skills/capcut-cinematic-cards` theo [quy ước skill của Codex](https://learn.chatgpt.com/docs/build-skills). Nếu chưa xuất hiện, khởi động lại Codex. Không cần clone repo hoặc sửa JSON. Chạy lại lệnh để cài lại bản 0.1.1; bản cũ được sao lưu. Lệnh được ghim phiên bản, không tự cập nhật sang bản mới.
 
 ## Dùng ngay
 
@@ -31,7 +31,7 @@ Mở chat Codex trên máy có CapCut/project rồi gửi:
 ```text
 $capcut-cinematic-cards
 Thêm time card và location card thực sự cần thiết cho project “Tên project”.
-Thêm giới thiệu nhân vật chính ở lần xuất hiện đầu tiên có thể xác nhận.
+Thêm tên và vai trò ngắn cho nhân vật chính ở lần xuất hiện đầu tiên có thể xác nhận.
 Chọn kiểu chữ cinematic phù hợp với chất phim, ưu tiên các đoạn chuyển mờ đen.
 Không che cảnh quan trọng, mặt, phản ứng hay thoại; không động vào clip ghép của tôi.
 Không computer use. Kịch bản và reference nhân vật ở: [đường dẫn hoặc file tôi gửi].
@@ -46,11 +46,13 @@ Nếu đã biết hướng mỹ thuật, nói thêm, ví dụ:
 - “Phim tài liệu: chữ trung tính, ưu tiên đọc rõ và thông tin.”
 - “Tình cảm: serif mềm, màu ấm, hiệu ứng nhẹ.”
 
+Bản **0.1.1** bổ sung mặc định tên + vai trò, cỡ chữ 6.2/3.8 trong đơn vị CapCut và vị trí hai dòng -0.64/-0.77 cho card nhân vật; có thể tùy biến theo phim. Các card thời gian/địa điểm giữ mặc định riêng.
+
 Codex lựa font có sẵn trên máy, màu, cỡ, khoảng cách, vị trí và thời gian fade theo phim. Có 5 điểm xuất phát: drama, thriller, tài liệu, tình cảm, noir; có thể tùy chỉnh từng card trong cùng hệ thống. Bản này tạo typography, bóng nhẹ và opacity fade; chưa có glitch, tracking động, freeze frame hay effect pack.
 
 ## Giới thiệu nhân vật có khả thi không?
 
-**Có**, khi xác nhận được nhân vật và lần xuất hiện đầu. Codex đối chiếu kịch bản/reference, rà các cảnh trước đó rồi đặt tên ở khoảnh khắc yên sau khi người xem nhận ra nhân vật. Có thể thêm vai trò ngắn nếu phim đã cung cấp thông tin.
+**Có**, khi xác nhận được nhân vật và lần xuất hiện đầu. Codex đối chiếu kịch bản/reference, rà các cảnh trước đó rồi đặt tên ở khoảnh khắc yên sau khi người xem nhận ra nhân vật. Mặc định có **tên + vai trò ngắn** (nghề nghiệp hoặc quan hệ đã được xác lập), chữ vai trò nhỏ hơn tên nhưng vẫn đọc rõ. Không gắn nhãn phản diện hay tiết lộ tương lai của nhân vật. Nếu bạn chỉ muốn tên, vai trò chưa rõ hoặc có nguy cơ spoil, Codex ghi lý do và bỏ riêng dòng vai trò.
 
 Không đoán tên từ khuôn mặt, không spoil người đang được giấu danh tính, không giới thiệu mọi nhân vật phụ. Nếu đoạn ra mắt có thoại hoặc phản ứng quan trọng, dời trong cùng cảnh hoặc bỏ card. Đây là lựa chọn biên tập của Codex dựa trên bằng chứng, không phải công cụ tự nhận diện khuôn mặt chính xác tuyệt đối.
 
@@ -94,7 +96,7 @@ Project, ảnh, tiếng, font và bản sao lưu ở local; installer chỉ tả
 python3 -m unittest discover -s tests -v
 ```
 
-27 test đã chạy đạt trên macOS, gồm trích hình/tiếng FFmpeg bằng media giả. Các test dùng project giả, không sửa phim thật: giữ compound/audio, mirror, tránh thoại, bằng chứng nhân vật, tùy chỉnh style, stale input, editor busy, apply/restore, ownership, installer và bảo vệ đường dẫn. CI chưa được bật; chưa tuyên bố đã chạy test trên Windows/Linux.
+30 test đã chạy đạt trên macOS, gồm trích hình/tiếng FFmpeg bằng media giả. Các test dùng project giả, không sửa phim thật: giữ compound/audio, mirror, tránh thoại, bằng chứng nhân vật, tùy chỉnh style, stale input, editor busy, apply/restore, ownership, installer và bảo vệ đường dẫn. CI chưa được bật; chưa tuyên bố đã chạy test trên Windows/Linux.
 
 [Lệnh và schema plan](skills/capcut-cinematic-cards/references/tool.md) · [Nguyên tắc chọn card và style](skills/capcut-cinematic-cards/references/editing.md)
 

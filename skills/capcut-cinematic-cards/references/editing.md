@@ -12,7 +12,7 @@ If 1.5 seconds of fade is too short, show a quiet 3.2-second lower-third over co
 
 - Read the character list and match identities against supplied portraits, scene metadata or unambiguous on-screen/dialogue evidence. A face alone is insufficient to infer a real or fictional identity.
 - Review the timeline from the start up to the candidate, using scene metadata to narrow frames. Distinguish first voice, first glimpse, disguise and first recognizable appearance. Do not claim first appearance from one isolated window.
-- Introduce principal characters once. Default text: character name; optional short role only when useful and already established. Avoid biographies, spoilers and invented credentials.
+- Introduce principal characters once. Default to name plus a short established role, such as "Restorer", "Hotel owner" or "Father"; use the film's language. The role identifies a job or relationship, not a label such as villain or future redemption. Avoid biographies, spoilers and invented credentials. For explicit names-only requests, unknown roles or mystery-sensitive introductions, omit the role and record `evidence.role_omission_reason` rather than guessing.
 - Prefer the first quiet shot after the entrance, usually starting 0.4–1 second after the face is readable. Allow the audience to see the person before reading. If the entrance has important dialogue or a reaction, defer within the scene and state why; otherwise omit.
 - Keep the name away from faces, eyelines, hands, props and subtitles. Use the same film style, with a modest hierarchy difference if helpful. Do not turn a restrained drama into a parade of freeze frames.
 - Preserve mystery: do not disclose an identity before the film does. Distinguish same-name characters with established information only.
@@ -31,7 +31,9 @@ First infer genre, period, emotional temperature, lighting palette, pace and exi
 
 Themes are starting values, not automatic genre detection. Choose `--font` explicitly when the default serif does not suit the film. Override color, size, spacing, fade and position within documented bounds. No fonts are distributed. Check font glyph coverage on the local machine and inspect longer names at the proposed size.
 
-Default 16:9 placement is lower-left, x=-0.52, primary y=-0.66, detail y=-0.79, in CapCut normalized coordinates. These are anchors, not bounding boxes: text can extend beyond them. Other aspect ratios, captions or long text require fresh layout review and adjusted size/position. Centered type is reserved for an actual quiet/negative-space interval, not an excuse to obscure a subject. Hardcoded safe coordinates cannot replace frame review.
+Default 16:9 time/location placement is lower-left, x=-0.52, primary y=-0.66, detail y=-0.79. Character cards with a role use primary y=-0.64, role y=-0.77, sizes 6.2/3.8 in native units, and a warmer, legible secondary color for heritage drama. Explicit plan style/position wins. Keep both lines visible for the same interval; shorten roles before adding reading pressure. A shared card can introduce an established pair when appropriate, rather than crowding an entrance with consecutive labels.
+
+Coordinates are CapCut normalized anchors, not bounding boxes: text can extend beyond them. Other aspect ratios, captions or long text require fresh layout review and adjusted size/position. Centered type is reserved for an actual quiet/negative-space interval, not an excuse to obscure a subject. Hardcoded safe coordinates cannot replace frame review.
 
 Use a soft black shadow and restrained opacity ramps. The helper implements editable typography and opacity only. Glitch, tracking animation, moving titles, freeze frames, matte backgrounds and external effect packs are outside this version. Do not invent effect IDs. If a request depends on unsupported effects, explain the limit and use an appropriate supported treatment only within the user's intent.
 

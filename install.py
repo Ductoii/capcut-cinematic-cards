@@ -13,7 +13,7 @@ import uuid
 import zipfile
 
 REPO = 'Ductoii/capcut-cinematic-cards'
-VERSION = 'v0.1.0'
+VERSION = 'v0.1.1'
 NAME = 'capcut-cinematic-cards'
 
 

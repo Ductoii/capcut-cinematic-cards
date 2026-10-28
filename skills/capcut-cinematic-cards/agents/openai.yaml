@@ -1,6 +1,6 @@
 interface:
   display_name: "CapCut Cinematic Cards"
   short_description: "Time, location and character cards for local CapCut"
-  default_prompt: "Use $capcut-cinematic-cards to add necessary time, location and first-appearance character cards, matching this film and preserving its compound clips and dialogue."
+  default_prompt: "Use $capcut-cinematic-cards to add necessary time, location and first-appearance character name-and-role cards, matching this film and preserving its compound clips and dialogue."
 policy:
   allow_implicit_invocation: true

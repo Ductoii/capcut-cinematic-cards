@@ -156,6 +156,45 @@ class CardsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'safe'):
             self.stage()
 
+    def character_card(self):
+        card = self.plan['cards'][0]
+        card.update(kind='character', title='MIRA VALE', detail='Restorer')
+        card['evidence'].update(character_identity='Matched the screenplay and reference.', first_appearance='Reviewed earlier scenes and this entrance.')
+        return card
+
+    def test_character_role_defaults_are_readable_and_inside_safe_area(self):
+        self.character_card()
+        stage = self.stage()
+        data = self.tool.read(stage/'draft.json')
+        name, role = data['materials']['texts']
+        self.assertEqual(name['font_size'], 6.2)
+        self.assertEqual(role['font_size'], 3.8)
+        self.assertEqual(role['text_color'], '#D4CDBE')
+        self.assertAlmostEqual(data['tracks'][-2]['segments'][0]['clip']['transform']['y'], -.64)
+        self.assertAlmostEqual(data['tracks'][-1]['segments'][0]['clip']['transform']['y'], -.77)
+        self.assertEqual(data['tracks'][:2], self.original['tracks'])
+
+    def test_character_role_omission_requires_a_documented_reason(self):
+        card = self.character_card()
+        card.pop('detail')
+        with self.assertRaisesRegex(ValueError, 'role'):
+            self.stage()
+        card['evidence']['role_omission_reason'] = 'The user explicitly requested names only.'
+        stage = self.stage()
+        data = self.tool.read(stage/'draft.json')
+        self.assertEqual(len(data['tracks']), 3)
+
+    def test_character_custom_style_and_position_override_defaults(self):
+        card = self.character_card()
+        card.update(y=-.6, style={'detail_size': 4.1, 'detail_color': '#C8DAE6'})
+        self.plan['style'] = {'theme': 'modern-thriller', 'title_size': 5.5}
+        stage = self.stage()
+        data = self.tool.read(stage/'draft.json')
+        self.assertEqual(data['materials']['texts'][0]['font_size'], 5.5)
+        self.assertEqual(data['materials']['texts'][1]['font_size'], 4.1)
+        self.assertEqual(data['materials']['texts'][1]['text_color'], '#C8DAE6')
+        self.assertAlmostEqual(data['tracks'][-1]['segments'][0]['clip']['transform']['y'], -.73)
+
     def test_evidence_changed_after_staging_blocks_commit(self):
         stage = self.stage()
         self.frame.write_bytes(b'changed')
