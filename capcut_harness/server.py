@@ -12,7 +12,7 @@ from .actions import CAPABILITIES
 from . import __version__
 
 WEB=Path(__file__).parent/'web'
-STATIC={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/app.css':'app.css','/charts.js':'charts.js',
+STATIC={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/host.js':'host.js','/app.css':'app.css','/charts.js':'charts.js',
         '/fonts/InterVariable.woff2':'fonts/InterVariable.woff2'}
 MAX_BODY=1024*1024
 
@@ -24,11 +24,12 @@ def create_server(service,port=0):
         server_version='CapCutHarness'
         def log_message(self,*args):pass
 
-        def headers_common(self):
+        def headers_common(self,cross_origin=False):
             self.send_header('Cache-Control','no-store')
             self.send_header('X-Content-Type-Options','nosniff')
             self.send_header('Referrer-Policy','no-referrer')
-            self.send_header('Cross-Origin-Resource-Policy','same-origin')
+            self.send_header('Cross-Origin-Resource-Policy','cross-origin' if cross_origin else 'same-origin')
+            if cross_origin:self.send_header('Access-Control-Allow-Origin','*')
             self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
         def json_response(self,status,data,cookie=False):
@@ -37,10 +38,10 @@ def create_server(service,port=0):
             if cookie:self.send_header('Set-Cookie',f'harness_session={token}; HttpOnly; SameSite=Strict; Path=/')
             self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
 
-        def local(self):
+        def local(self,media=False):
             number=self.server.server_address[1]
             hosts={f'127.0.0.1:{number}',f'localhost:{number}'}
-            return len(self.headers.get_all('Host') or [])==1 and self.headers.get('Host') in hosts and self.headers.get('Sec-Fetch-Site') not in ('cross-site',)
+            return len(self.headers.get_all('Host') or [])==1 and self.headers.get('Host') in hosts and (media or self.headers.get('Sec-Fetch-Site') not in ('cross-site',))
 
         def authenticated(self):
             given=self.headers.get('X-Harness-Token','')
@@ -53,8 +54,18 @@ def create_server(service,port=0):
         def route(self):return unquote(urlsplit(self.path).path)
 
         def do_GET(self):
-            if not self.local():return self.json_response(403,dict(error='Local Host/Origin required'))
             path=self.route()
+            cap=re.fullmatch(r'/media-cap/([A-Za-z0-9_-]{40,60})/([a-f0-9]{2,40})/(before\.wav|after\.wav|master\.wav)',path)
+            if not self.local(media=bool(cap)):return self.json_response(403,dict(error='Local Host/Origin required'))
+            if cap:
+                try:
+                    if service.media_caps.get(cap.group(1))!=cap.group(2):raise ValueError('Unknown media capability')
+                    report=service.job(cap.group(2)).get('report',{})
+                    key={'before.wav':'before_preview','after.wav':'after_preview','master.wav':'master'}[cap.group(3)]
+                    target=Path(report[key]);owned=service.root/'jobs'/cap.group(2)
+                    if target.is_symlink() or not target.resolve().is_relative_to(owned.resolve()):raise ValueError('Unowned media')
+                    return self.file(target,'audio/wav',ranges=True,cross_origin=True)
+                except (ValueError,KeyError,OSError):return self.json_response(404,dict(error='Media not available'))
             if path=='/api/bootstrap':
                 return self.json_response(200,dict(token=token,version=__version__,capabilities=CAPABILITIES),cookie=True)
             if path.startswith(('/api/','/media/')) and not self.authenticated():return self.json_response(403,dict(error='Local session required'))
@@ -79,7 +90,7 @@ def create_server(service,port=0):
                 return self.json_response(404,dict(error='Not found'))
             except (ValueError,KeyError,OSError) as exc:return self.json_response(400,dict(error=str(exc)))
 
-        def file(self,path,content_type,ranges=False):
+        def file(self,path,content_type,ranges=False,cross_origin=False):
             path=Path(path)
             if not path.is_file() or path.is_symlink():return self.json_response(404,dict(error='File not available'))
             size=path.stat().st_size;start=0;end=size-1;partial=False
@@ -93,7 +104,7 @@ def create_server(service,port=0):
                 if m.group(1) and m.group(2):end=min(end,int(m.group(2)))
                 if start>end or start>=size:return self.json_response(416,dict(error='Range outside media'))
                 partial=True
-            self.send_response(206 if partial else 200);self.headers_common()
+            self.send_response(206 if partial else 200);self.headers_common(cross_origin)
             self.send_header('Content-Type',content_type)
             if ranges:self.send_header('Accept-Ranges','bytes')
             if partial:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
@@ -120,6 +131,7 @@ def create_server(service,port=0):
                 if not isinstance(data,dict):raise ValueError('JSON object required')
                 if self.route()=='/api/action':result=service.dispatch(data)
                 elif self.route()=='/api/command':result=service.command(data.get('text'),data.get('project_id'))
+                elif self.route()=='/api/workspace':result=workspace_action(service,data)
                 else:return self.json_response(404,dict(error='Not found'))
                 return self.json_response(200,result)
             except (ValueError,KeyError,TypeError,OSError) as exc:return self.json_response(400,dict(error=str(exc)))
@@ -131,3 +143,31 @@ def create_server(service,port=0):
     server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
     server.daemon_threads=True;server.service=service;server.token=token
     return server
+
+
+def workspace_action(service,data):
+    w=service.workspace;op=data.get('operation');thread=data.get('thread_id')
+    if op=='open':return w.open(thread)
+    if op=='submit':return w.submit(data['connection_id'],data['id'],data['text'],data.get('project_id'),data.get('context'),thread)
+    if op=='update':return w.update(data['id'],data['state'],data.get('text',''),data.get('job_id'),data.get('stage_id'),thread,data.get('from_ui',False))
+    if op=='get':return w.get(data['id'],thread)
+    if op=='requests':return w.list(data['connection_id'],thread)
+    if op=='data':
+        w.connection(data['connection_id'],thread);path=data.get('path','')
+        if path=='/api/bootstrap':return dict(version=__version__,capabilities=CAPABILITIES,chat_bridge=True)
+        if path=='/api/projects':return service.projects()
+        if path=='/api/jobs':return service.jobs()
+        match=re.fullmatch(r'/api/projects/([a-f0-9]{16})',path)
+        if match:return service.inspect(match.group(1))
+        match=re.fullmatch(r'/api/jobs/([a-f0-9]{2,40})',path)
+        if match:
+            job=service.job(match.group(1))
+            if job.get('report'):
+                token=next((key for key,value in service.media_caps.items() if value==job['id']),None)
+                if token is None:token=secrets.token_urlsafe(32);service.media_caps[token]=job['id']
+                job['media_capability']=token
+            return job
+        raise ValueError('Unknown workspace data operation')
+    if op=='action':
+        w.connection(data['connection_id'],thread);return service.dispatch(data['action'])
+    raise ValueError('Unknown workspace operation')

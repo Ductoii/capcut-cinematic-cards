@@ -12,13 +12,13 @@ from .loudness import measure
 from .speech import detect
 from .quality import evidence
 
-DEFAULTS=dict(target_lufs=-18.,max_boost_db=12.,peak_dbtp=-1.5)
+DEFAULTS=dict(target_lufs=-16.,max_boost_db=48.,peak_dbtp=-1.5)
 
 
 def parameters(value):
     if not isinstance(value,dict) or set(value)-set(DEFAULTS):raise ValueError('Unknown audio parameter')
     result={**DEFAULTS,**value}
-    for name,(low,high) in dict(target_lufs=(-24,-12),max_boost_db=(0,24),peak_dbtp=(-6,-.5)).items():
+    for name,(low,high) in dict(target_lufs=(-24,-12),max_boost_db=(0,48),peak_dbtp=(-6,-.5)).items():
         v=result[name]
         if isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not low<=v<=high:
             raise ValueError(f'Invalid {name}: expected {low}..{high}')

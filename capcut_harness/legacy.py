@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-SCRIPTS = Path(__file__).resolve().parents[1]/'skills/capcut-cinematic-cards/scripts'
+SCRIPTS = Path(__file__).resolve().parents[1]/'skills/capcut-harness/scripts'
 if not SCRIPTS.is_dir():
     SCRIPTS=Path(__file__).parent/'cards_backend'
 if str(SCRIPTS) not in sys.path:

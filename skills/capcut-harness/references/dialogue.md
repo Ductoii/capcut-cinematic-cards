@@ -1,0 +1,9 @@
+# Source-aware online-film dialogue
+
+Use `capcut_action` with `{"action":"dialogue.analyze","project_id":"ID","params":{}}`. Default: speech anchor −16 LUFS, maximum correction 48 dB, final peak ceiling −1.5 dBTP, stereo 48 kHz PCM24. These are product defaults for clear online film dialogue, not an official universal YouTube/MV specification. A yellow peak meter alone cannot equalize perceived speech across clips.
+
+The engine maps each source instance through compound trims, constant speed, volume and fades. It conditions a detector-only copy to find quiet speech; that boost never leaks into rendered audio. Each source receives speech-anchored gain, bounded phrase trims and gentle RMS compression, then source peak protection. Corrected sources are summed before final master peak protection. Separate music/SFX sources retain their mapped level. Speech and background already baked into one source change together; VAD does not separate stems or identify singers.
+
+Every source remains in `sources`/`source_coverage`, including no-speech and excluded sources. `intervals` contains actual mapped speech candidates and before/after values; overlaps are explicitly labeled. Large corrections and low VAD scores are review flags, not calibrated certainty or clipping diagnosis. Do not describe missing/no-speech clips as successfully normalized. Output reports keep `editor_render_verified: false`.
+
+Actions: `dialogue.render` with `job_id`, optional `params`, and `excluded` interval IDs creates a listening revision; `dialogue.apply`, `dialogue.undo`, `dialogue.cancel`, `dialogue.retry` use `job_id`. Preserve original audio for excluded intervals before final master protection. Apply refuses stale sources/revisions or a running editor. Existing v0.2.0 jobs remain readable and undoable; their old analysis is not retroactively called the new engine.

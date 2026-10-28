@@ -111,7 +111,8 @@ def inspect_audio(project):
                 media_duration=float(meta.get('format',{}).get('duration',0) or 0)
                 if media_duration and position+(right-left)*speed>media_duration+.06:
                     issue(ident,'Source trim exceeds media duration');continue
-                sources.append(dict(id=ident,path=str(path),kind=kind,start=left,end=right,
+                instance='/'.join([*parents,ident])
+                sources.append(dict(id=ident,instance_id=instance,path=str(path),kind=kind,start=left,end=right,
                                     source_start=max(0,position),speed=speed,volume=volume,
                                     envelopes=fades,parents=parents,root_id=(parents[0] if parents else ident)))
 

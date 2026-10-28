@@ -14,7 +14,9 @@ from .legacy import cards
 from .timeline import inspect_audio
 from .mix import render_mix,assert_sources_current
 from .audio import analyze,render,parameters,write_json
+from .source_audio import analyze_sources,render_sources
 from . import transaction
+from .workspace import Workspace
 
 
 class Service:
@@ -23,6 +25,7 @@ class Service:
         self.registry=cards.read(self.root/'projects.json') if (self.root/'projects.json').exists() else {}
         self.requests=cards.read(self.root/'requests.json') if (self.root/'requests.json').exists() else {}
         self.queue=queue.Queue();self.stop=threading.Event();self.cancel_events={};self.closed=False
+        self.workspace=Workspace(self);self.media_caps={}
         roots=cards.project_roots() if project_roots is None else project_roots
         for root in roots:
             root=Path(root).expanduser()
@@ -183,15 +186,14 @@ class Service:
         if operation=='analyze':
             progress('inspect',0,1);inventory=inspect_audio(project['path']);progress('inspect',1,1)
             write_json(directory/'inventory.json',inventory)
-            mixed=render_mix(inventory,directory/'mix',progress,cancelled)
-            analysis=analyze(Path(mixed['path']),directory/'analysis',job['params'],progress,cancelled)
-            analysis['source_quality']=mixed['source_quality'];write_json(directory/'analysis/analysis.json',analysis)
+            analysis=analyze_sources(inventory,directory/'analysis',job['params'],progress,cancelled)
         else:
             parent=self.store.get(job['parent'])
             inventory=cards.read(parent['inventory_path']);assert_sources_current(inventory)
             analysis=cards.read(parent['analysis_path'])
             write_json(directory/'inventory.json',inventory);write_json(directory/'analysis.json',analysis)
-        report=render(analysis,directory/'render',job['params'],job['excluded'],progress,cancelled)
+        renderer=render_sources if analysis.get('engine')=='source-dialogue-v2' else render
+        report=renderer(analysis,directory/'render',job['params'],job['excluded'],progress,cancelled)
         analysis_path=directory/'analysis'/'analysis.json' if operation=='analyze' else directory/'analysis.json'
         if cancelled():raise InterruptedError('Job cancelled')
         stage=transaction.stage(inventory,report,directory/'stage')

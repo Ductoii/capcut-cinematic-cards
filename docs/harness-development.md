@@ -1,30 +1,27 @@
-# Harness development
+# Developer guide
 
-Python package: `capcut_harness`. Install with Python 3.10–3.13: `python -m pip install .`; external FFmpeg/ffprobe are required. The wheel includes the card backend, ONNX model/license, web assets and local font/license. End users should prefer the managed source installer, which also installs both Codex skills.
+Python 3.10–3.13, FFmpeg/ffprobe, pinned NumPy/ONNX Runtime. Build with `python -m pip wheel . --no-deps`. The wheel includes card helpers, Silero model/license, web assets/font/license and `capcut-harness-mcp`. The managed installer also registers the Codex plugin; a plain pip install does not register it.
 
-Launch: `python -m capcut_harness --no-browser --state-dir /tmp/own-state --project-root /path/to/projects`. Port defaults to an available loopback port. Output includes the URL. Existing-state launches connect to the running service; avoid unrelated programs sharing a state directory.
+## Components
 
-## API
+- `mcp.py`: stdio MCP tools, inline MCP App resource, loopback service startup. `capcut_open_workspace` has the thread entrypoint; no second model/native IPC bypass.
+- `web/host.js`: MCP Apps JSON-RPC host initialization, tool calls and `ui/message` follow-ups. Host rejection/timeout remains visible.
+- `workspace.py`: durable request UUIDs, input hashes, chat/connection binding and ordered result events. Completed UUIDs are not rerun.
+- `server.py`: authenticated loopback API; component API calls use MCP tools, audio uses random read-only per-job media capabilities. No broad cross-origin mutation API.
+- `source_audio.py`: source-local conditioned VAD, weighted take anchor, bounded phrase trims, gentle RMS compressor, source and master peak protection. Separate sources are processed before summation.
+- `audio.py`: shared parameters/envelopes; legacy engine retained for old saved jobs.
+- `service.py`, `jobs.py`: serialized persisted jobs, cancellation and source/revision ownership.
+- `transaction.py`: external master, guarded Apply/Undo. Existing card helper uses its own stage/apply/restore guards.
+- `skills/capcut-harness`: canonical skill plus card scripts and conditional references; wheel packages scripts as `cards_backend`.
 
-GET `/api/bootstrap` returns a random session token and sets a SameSite Strict cookie. Mutations require JSON, `X-Harness-Token` and matching `Origin`. Host is restricted to the actual local port. The server binds IPv4 loopback only. GET `/api/projects`, `/api/projects/<id>`, `/api/jobs`, `/api/jobs/<id>` require a token or session cookie. POST `/api/action` and `/api/command` share `Service.dispatch`.
+## Development entrypoints
 
-Actions: project.register/inspect; dialogue.analyze/render/apply/undo/cancel/retry; cards.inspect/stage/apply/verify/restore. Render takes the parent `job_id`, `params` and excluded interval IDs. Reusing a `request_id` with the same action returns its original ticket; conflicting reuse is refused. Dialogue preparation/mutation is serialized by one worker; cards adapters retain their existing synchronous transaction/lock behavior. Both use `.capcut-cards.lock` when mutating a project.
+`python -m capcut_harness.mcp` starts the MCP transport. `python -m capcut_harness --no-browser --state-dir /tmp/own-state --project-root /path/to/projects` starts standalone diagnostics. Its legacy finite CLI parser is not the panel's freeform interface.
 
-Jobs persist under state/jobs/<id>; all media serving is allowlisted and bound to that job directory. Audio byte ranges support seeking. A restart marks unfinished jobs interrupted; Retry creates a new analysis or resumes the saved apply/undo transaction, with current hashes and editor checks. Backups and evidence must remain intact. CLI commands poll the same records to completion.
+The managed installer writes a local marketplace, registers it with `codex plugin marketplace add`, then installs with `codex plugin add`. Runtime interpreter paths are absolute; a fresh chat may be required for tool discovery. No user config editing or replacement model/session.
 
-## Tests
+The UI bridge requires actual host support. Do not infer successful rendering/delivery from a valid MCP JSON response. Do not label source reconstruction as native editor verification.
 
-```bash
-python -m unittest discover -s tests -q
-PLAYWRIGHT_MODULE=/absolute/path/to/playwright node tests/browser_harness.mjs
-```
+## Delivery evidence
 
-Tests require FFmpeg. Real VAD tests synthesize self-authored speech with macOS `say` (Samantha) or `espeak`; they skip if neither exists. Browser tests require Playwright and Chrome; set `HARNESS_PYTHON` and `CHROME_PATH` for custom locations. Fixture audio/projects are disposable and never production data. Browser automation tests this app only and does not control CapCut.
-
-Build: `python -m pip wheel . --no-deps`. Installer tests inject a lightweight environment builder; separately perform a real clean install and verify NumPy/ORT, ONNX inference, HTTP/UI, and wheel assets from outside the checkout. Public release checks are recorded in verification.md.
-
-## Audio and transaction boundaries
-
-Timeline adapters refuse unmodeled audible semantics. Mix reconstruction uses disk-backed float32 stereo and bounded decoder concurrency. Separated video audio is omitted to avoid doubling its detached track. Silero VAD is local and recurrent; each detected region is measured through a bounded FFmpeg input window. Phrase gains interpolate smoothly; oversampled limiting precedes actual post-render interval/true-peak checks. Reports distinguish target attainment from bounded-gain exceptions.
-
-Apply stages exact original mirrors and a preservation proof, then checks source/review/project hashes under the shared project lock. It writes an owned resource first, draft mirrors next, ownership state last, with a journal. Known partial writes can recover; rollback preserves foreign bytes and their possible generated-media dependencies. Undo is guarded and leaves the generated WAV for safety. Native playback is a separate verification step; file integrity alone must never set editor_render_verified true.
+For v0.3.0 the owner explicitly declined additional review/recheck, a 300-source exercise and another full-film run. Delivery is limited to necessary syntax, packaging and installation checks; historical tests are retained for developers but are not claims about this release's audio quality. No media fixtures or personal projects are published.

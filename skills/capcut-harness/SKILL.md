@@ -1,25 +1,30 @@
 ---
 name: capcut-harness
-description: Run the local CapCut browser workspace and reversible dialogue loudness jobs, with measured A/B review, exclusions, Apply and Undo. Use for balancing speech across a readable local CapCut project or inspecting saved harness jobs.
+description: Open the local CapCut editing panel beside this Codex chat, receive freeform UI requests, add cinematic time/location/character cards and balance dialogue across source clips. No Computer Use or second model.
 ---
 
 # CapCut Harness
 
-Use the installed launcher `~/.local/bin/capcut-harness` (Windows: `capcut-harness.py`) or its path from `~/.local/share/capcut-harness-tool/.installation.json`. Source checkout: `python -m capcut_harness`. `--help` lists options. Launch the local browser UI; no Computer Use is needed. Default state: `~/.local/share/capcut-harness`; keep it for backups and Undo.
+One skill owns the workspace, cinematic cards and dialogue. Work through local tools and files; no Computer Use, separate API key or second model.
 
-If absent, install the pinned release using the repository's `install-harness.py`; Python 3.10–3.13 and FFmpeg/ffprobe are prerequisites. Prepare missing dependencies through the terminal within the user's request; don't ask them to edit files. An unmanaged directory is preserved; choose a separate managed install location rather than deleting it.
+## Start the workspace
 
-## Workflow
+Call `capcut_open_workspace`. Its MCP App opens in the conversation panel and sends natural-language requests through the hosting chat's `ui/message` bridge. Do not substitute the standalone HTTP browser and claim it can send messages to Codex. If the tool is missing, inspect `~/.local/share/capcut-harness-tool/.installation.json` and the installed plugin status; run the managed installer's registration repair as needed. Prepare dependencies yourself. Never ask the user to edit JSON/configuration. A newly registered local MCP server may require a fresh chat before tools appear; disclose that actual limitation rather than spawning another model or duplicating the chat.
 
-- Confirm the intended project; discover from default CapCut roots or pass `--project-root PATH`. `inspect PATH` returns actual metadata. Inspecting does not write the project.
-- `command "cân âm thoại PROJECT"` uses the same job registry as the UI and waits for completion. With the UI running, commands connect to that service. This is a finite grammar, not a shell or another LLM. Commands include `phân tích PROJECT`, `áp dụng JOB`, `hoàn tác JOB`, `thử lại JOB`.
-- Review the actual report: accepted/excluded intervals, before/after P10–P90 spread, target attainment, true peak, sample count and unsupported-source findings. The UI seeks intervals and switches synchronized A/B. Change target/boost/ceiling or exclusions there, then update the listening revision. Exclusions set gain to zero; the final peak limiter still covers the complete master.
-- Defaults: speech target −18 LUFS, maximum boost/cut 12 dB, whole-master ceiling −1.5 dBTP, stereo 48 kHz PCM24 WAV. VAD identifies voice activity; it does not identify speakers, transcribe, remove music or separate stems. Music under speech changes with that speech interval. Singing/short/noisy speech can be misclassified; let the user inspect/exclude it. Report target deviations separately from quality flags: VAD scores are heuristic, near-full-scale source samples are not proof of clipping, and measured 20 ms RMS attenuation after limiting is not the limiter’s internal gain. Singing/music-vocal classification stays unassessed. Never promise every source hits target.
-- Analysis/render writes only job outputs. Apply requires saved and closed CapCut and a current review revision; it adds one root audio master and mutes audible original root segments. Nested compound, video and card structures are preserved. Respect existing authorization for Apply; otherwise present the concrete A/B result for review. Never kill CapCut or bypass stale/unsupported guards.
-- Undo restores exact saved draft mirrors only while known hashes match. After restart use Retry to recover interrupted work; mutation retries reuse the staged transaction. Do not delete state or manually overwrite changed drafts. Foreign edits stop restoration and are preserved.
+Use the installed `~/.local/bin/capcut-harness` for project inspection/diagnostics, and the registered private Python runtime for the plugin transport. Preserve `~/.local/share/capcut-harness`: it holds listening masters, request results and exact Undo backups.
 
-Initial compatibility evidence is macOS and readable unencrypted schema 360000. Unsupported audible effects/routing, unknown mute flags, reverse or variable speed are refused. `editor_render_verified: false` means only file-level preservation and reconstructed audio have been checked. Do not claim native CapCut playback/export verification without actually hearing/rendering that result.
+## Receive requests from the panel
 
-## Cards
+Messages labeled `[CapCut Harness request UUID]` are the user's freeform requests in this same chat, not a fixed command language. Call `capcut_request_get` with that UUID to read authoritative text, selected project and structured context. If complete/cancelled, do not repeat it. Otherwise publish `acknowledged` through `capcut_request_update`, do the requested work with normal tools, and publish concise `working` and terminal `complete`/`blocked`/`failed` updates. Include `job_id` or `stage_id` when available. Resolve uncertainty from the project context before asking. The backend's registry is a tool interface, never a restriction on what the user may ask Codex.
 
-Use the sibling `$capcut-cinematic-cards` skill for necessary time/location cards and first-appearance character names **with short verified roles**, styled for the film. That workflow checks scene/dialogue evidence, prefers quiet dark transitions, and adds separate root text tracks. The harness Cards view lists existing text; it does not automatically identify characters or invent cinematic placement.
+Use the request's `connection_id` with `capcut_workspace_data` and `capcut_action`. `capcut_action` takes a structured `action` object. Job work is asynchronous: read `/api/jobs/JOB_ID` until terminal; do not call Apply before preparation has completed. Do not claim completion from a queued ticket. Publish the actual outcome to the request panel.
+
+## Choose the workflow
+
+- **Cinematic cards:** read [cards](references/cards.md), [editing](references/editing.md) and [tool/plan](references/tool.md). This skill's `scripts/cards.py` is the canonical helper. Choose necessary time/location changes, first visible character appearances with verified short roles, and film-specific typography. Review the whole hold; protect dialogue and important shots. Add separate editable root text tracks; preserve original fades and compounds. Stage completely before editor-close coordination, then apply/verify or restore using the existing guards.
+- **Dialogue:** read [dialogue](references/dialogue.md). Use `dialogue.analyze` with the selected project. The online-film preset levels each source's speech before summation, gently compresses protruding syllables, and protects peaks. Publish the resulting listening job. Do not run an extra whole-film verification/listening cycle unless requested; respect the user's chosen workflow. Never claim studio mastering, universal YouTube certification or restoration of already distorted audio.
+- **Other editing requests:** interpret the user's intent naturally. Use available capabilities where suitable; explain a concrete missing capability without returning a regex “unsupported command” error. Do not expand a request into unrelated edits.
+
+## Writes and recovery
+
+Analysis/listening output does not change the project. Apply requires saved/closed CapCut and current source/revision hashes. Respect the user's authorization; never kill CapCut or bypass freshness checks. Dialogue adds an external master and mutes only known original root audio participants; nested compounds, picture, text and timing stay intact. Card writes add owned text only. Undo/restore stops on later foreign edits and preserves them. File-level preservation and source-reconstructed audio are not proof of native CapCut playback/export.

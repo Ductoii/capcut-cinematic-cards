@@ -1,0 +1,7 @@
+{
+  "name": "capcut-harness",
+  "version": "0.3.0",
+  "description": "Local same-chat CapCut workspace, cinematic cards and film dialogue.",
+  "skills": "./skills/capcut-harness",
+  "mcpServers": "./.mcp.json"
+}

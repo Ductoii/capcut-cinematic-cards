@@ -15,3 +15,5 @@
 .playback-panel .panel-heading{margin-bottom:4px}.playback-panel audio{margin-bottom:4px}
 
 .quality-panel h2{margin-bottom:12px}.quality-panel p{font-size:13px;margin-top:8px}.quality-panel .panel-note{color:var(--faint)}
+
+.cards-request{display:grid;gap:12px;max-width:700px;margin-bottom:32px}.cards-request textarea{width:100%;resize:vertical;color:var(--text);background:var(--ground);border:1px solid var(--control);border-radius:8px;padding:12px;font:inherit}.cards-request .primary{justify-self:start}.request-panel{margin-top:20px}.request-row{padding:16px 0;border-bottom:1px solid var(--rule)}.request-row:last-child{border:0}.request-row p{white-space:pre-wrap;overflow-wrap:anywhere}.agent-result{color:var(--accent)}

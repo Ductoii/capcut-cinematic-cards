@@ -6,12 +6,20 @@ import numpy as np
 from .process import run,check_cancel
 
 
-def detect(path,out,cancelled=lambda:False,progress=lambda *a:None):
+def detect(path,out,cancelled=lambda:False,progress=lambda *a:None,conditioning=False):
     import onnxruntime as ort
     out=Path(out);out.mkdir(parents=True,exist_ok=True);mono=out/'vad.f32'
     with mono.open('wb') as f:
         run(['ffmpeg','-v','error','-i',path,'-vn','-ac','1','-ar','16000','-f','f32le','-'],stdout=f,cancelled=cancelled)
     audio=np.memmap(mono,dtype='<f4',mode='r');length=len(audio)
+    # Detection sees a level-conditioned copy only. Quiet source speech should
+    # not vanish just because another clip was recorded 40 dB louder.
+    peak=0.
+    if conditioning:
+        for pos in range(0,length,160000):
+            check_cancel(cancelled)
+            peak=max(peak,float(np.max(np.abs(audio[pos:pos+160000]),initial=0)))
+    detection_gain=min(10**(48/20),.5/peak) if conditioning and peak>1e-7 else 1.
     opts=ort.SessionOptions();opts.intra_op_num_threads=1;opts.inter_op_num_threads=1
     model=ort.InferenceSession(str(Path(__file__).parent/'assets/silero_vad.onnx'),sess_options=opts,providers=['CPUExecutionProvider'])
     h=np.zeros((1,1,128),np.float32);c=h.copy();previous=np.zeros(64,np.float32);probs=[]
@@ -19,7 +27,7 @@ def detect(path,out,cancelled=lambda:False,progress=lambda *a:None):
     for index in range(0,total,4000):
         check_cancel(cancelled);n=min(4000,total-index)
         data=np.zeros(n*512,np.float32);part=audio[index*512:min(length,(index+n)*512)]
-        data[:len(part)]=np.clip(part,-1,1);chunks=data.reshape(n,512)
+        data[:len(part)]=np.clip(part*detection_gain,-1,1);chunks=data.reshape(n,512)
         context=np.vstack((previous[None,:],chunks[:-1,-64:]))
         previous=chunks[-1,-64:].copy()
         output,h,c=model.run(None,dict(input=np.concatenate((context,chunks),axis=1),h=h,c=c))
@@ -45,5 +53,6 @@ def detect(path,out,cancelled=lambda:False,progress=lambda *a:None):
             scores=np.asarray(probs[int(left*16000/512):max(int(left*16000/512)+1,int(np.ceil(right*16000/512)))])
             mean=float(np.mean(scores));active=float(np.mean(scores>=.5))
             result.append(dict(id=f'speech-{len(result)+1:05d}',start=round(left,6),end=round(right,6),
-                               vad_mean=round(mean,4),vad_active_fraction=round(active,4),vad_low_score=mean<.65 or active<.6))
+                               vad_mean=round(mean,4),vad_active_fraction=round(active,4),vad_low_score=mean<.65 or active<.6,
+                               detector_gain_db=round(float(20*np.log10(detection_gain)),3)))
     return result

@@ -19,3 +19,7 @@ All reproductions failed before their fixes and passed afterward. Final suite: 6
 - Native CapCut playback/export remains unverified, as allowed by the approved design; file verification and source-reconstructed audio do not establish it. Cost: the user must assess actual editor playback after an authorized Apply.
 - Public-tag installation is evaluated after publication, when that source exists. Cost: a release problem would need a corrective release rather than pretending a pre-publication check was public evidence.
 - Automated singer/speaker identification is outside this VAD capability. Honest uncertainty is required and is reported. Cost: vocals/false detections need listening review and exclusions.
+
+## v0.3.0 direct implementation — 2026-10-28
+
+The owner requested a unified same-chat panel and delegated a better dialogue method than following CapCut's yellow peak meter. They explicitly rejected further approval/recheck/300-source/full-film validation cycles. Implemented source-local speech anchoring, gentle RMS compression and peak protection with an online-film preset, not a universal film or YouTube standard. Unified card helpers live in the primary harness skill. MCP Apps host `ui/message` is the supported same-chat bridge; private native socket bypasses and second-model sessions are excluded. Necessary package/installation checks do not establish native CapCut playback or host message delivery.
