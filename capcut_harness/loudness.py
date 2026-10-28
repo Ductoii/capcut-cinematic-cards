@@ -8,8 +8,10 @@ from .process import run
 def measure(path,start=None,end=None,cancelled=lambda:False):
     args=['ffmpeg','-hide_banner','-nostats']
     if start is not None:args+=['-ss',f'{start:.9f}']
-    args+=['-i',str(path)]
+    # Bound input, not output: loudnorm buffers future samples before producing
+    # output, so an output -t would contaminate short regions with later speech.
     if end is not None:args+=['-t',f'{max(.001,end-(start or 0)):.9f}']
+    args+=['-i',str(path)]
     args+=['-vn','-af','apad=pad_dur=0.4,loudnorm=I=-18:TP=-1.5:print_format=json','-f','null','-']
     _,log=run(args,cancelled=cancelled)
     try:

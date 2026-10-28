@@ -75,5 +75,13 @@ class AudioTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'changed'):
             render(a,self.root/'render',{},[],lambda *a:None,lambda:False)
 
+    def test_loudness_window_does_not_read_louder_speech_after_its_end(self):
+        signal=np.sin(np.arange(48000)*2*np.pi*500/48000)*.03
+        wav(self.root/'alone.wav',signal[:24000])
+        wav(self.root/'tail.wav',np.concatenate([signal[:24000],signal*20,signal*20,signal*20]))
+        bounded=measure(self.root/'tail.wav',0,.5)
+        isolated=measure(self.root/'alone.wav')
+        self.assertAlmostEqual(bounded['lufs'],isolated['lufs'],delta=.1)
+
 
 if __name__=='__main__':unittest.main()
