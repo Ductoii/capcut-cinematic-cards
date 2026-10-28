@@ -463,5 +463,135 @@ class CardsTest(unittest.TestCase):
         self.assertEqual(len(data['materials']['videos']), len(self.original['materials']['videos']))
 
 
+    def paired_plan(self):
+        self.plan['protected_ranges'] = [{'start': 7, 'end': 13, 'kind': 'dialogue', 'reason': 'Speech continues'}]
+        self.plan['introduce_characters'] = True
+        self.plan['character_review'] = []
+        self.plan['cards'] = []
+        for ident, x, bounds in [('mira', -.5, [-.8, -.6, -.2, -.3]), ('leo', .5, [.2, -.6, .8, -.3])]:
+            self.plan['cards'].append(dict(id=ident, kind='character', characters=[ident], title=ident.title(),
+                detail='Restorer', start=8, duration=3.2, x=x, y=-.4, simultaneous_group='pair', bounds=bounds,
+                exclusion_zones=[[-.85, -.85, .85, -.65]],
+                evidence=dict(start=7, end=13, frames=[str(self.frame)], visual_review='Reviewed full two-shot.',
+                    dialogue_review='Speech continues; identifiers do not cover captions.',
+                    character_identity='Confirmed script identity.', first_appearance='First recognizable view.',
+                    layout_review='Full name and role extents checked against subtitles and movement.',
+                    identity_association='Label stays beside this person throughout the hold.')))
+            self.plan['character_review'].append(dict(id=ident, name=ident.title(), status='introduced', card_id=ident))
+
+    def test_simultaneous_labels_use_separate_tracks_and_preserve_subtitles(self):
+        self.paired_plan()
+        stage = self.stage(); self.apply(stage)
+        data = self.tool.read(self.paths[0])
+        self.assertEqual(data['tracks'][:2], self.original['tracks'])
+        added = data['tracks'][2:]
+        self.assertEqual(len(added), 4)
+        self.assertTrue(all(len(t['segments']) == 1 for t in added))
+        self.assertTrue(self.tool.verify(stage)['verified'])
+
+    def test_simultaneous_group_requires_distinct_reviewed_noncolliding_labels(self):
+        for mutation in ('collision', 'review', 'timing', 'duplicate', 'subtitle', 'third'):
+            with self.subTest(mutation=mutation):
+                self.paired_plan(); card = self.plan['cards'][1]
+                if mutation == 'collision': card['bounds'] = self.plan['cards'][0]['bounds']
+                if mutation == 'review': card['evidence'].pop('identity_association')
+                if mutation == 'timing': card['start'] += .5
+                if mutation == 'duplicate': card['characters'] = ['mira']
+                if mutation == 'subtitle': card['exclusion_zones'] = [[.3, -.8, .7, -.4]]
+                if mutation == 'third':
+                    third = copy.deepcopy(card); third.update(id='accidental', simultaneous_group=None)
+                    self.plan['cards'].append(third)
+                with self.assertRaises(ValueError): self.stage(mutation)
+
+    def test_restyle_retains_custom_typography_when_only_color_requested(self):
+        data = self.saved_titles(); material = data['materials']['texts'][0]
+        content = json.loads(material['content']); content['styles'][0].update(size=4.7, letter_spacing=.025)
+        content['styles'][0]['font']['path'] = str(self.font)
+        material.update(content=json.dumps(content), font_size=4.7, letter_spacing=.025)
+        self.save_mirrors(data); self.review_saved_ownership()
+        self.plan['style'] = {'title_color': '#ABCDEF'}
+        stage = self.tool.stage(self.project, self.plan, self.root/'retain', None, preserve_owned=True)
+        self.apply(stage); updated = self.tool.read(self.paths[0])['materials']['texts'][0]
+        self.assertEqual(updated['font_size'], 4.7)
+        self.assertEqual(updated['letter_spacing'], .025)
+        self.assertEqual(json.loads(updated['content'])['styles'][0]['size'], 4.7)
+        self.assertEqual(updated['font_path'], material['font_path'])
+        self.assertEqual(updated['text_color'], '#ABCDEF')
+
+    def test_per_card_font_multiline_and_explicit_scale_width(self):
+        other = self.root/'sans.otf'; other.write_bytes(b'OTTOtest-font')
+        card = self.plan['cards'][0]
+        card.update(font=str(other), title='THE NEXT\nMORNING', text_layout={'scale': .8, 'line_max_width': .5})
+        stage = self.stage(); self.apply(stage); data = self.tool.read(self.paths[0])
+        material = data['materials']['texts'][0]; segment = data['tracks'][-2]['segments'][0]
+        self.assertEqual(material['font_path'], str(other.resolve()))
+        self.assertEqual(json.loads(material['content'])['text'], 'THE NEXT\nMORNING')
+        self.assertEqual(material['line_max_width'], .5)
+        self.assertTrue(material['force_apply_line_max_width'])
+        self.assertEqual(segment['clip']['scale'], {'x': .8, 'y': .8})
+        self.assertEqual(segment['uniform_scale']['value'], .8)
+
+    def test_restyle_preserves_short_manual_hold(self):
+        data = self.saved_titles()
+        for track in data['tracks'][-2:]:
+            track['segments'][0]['target_timerange']['duration'] = 2100000
+        self.save_mirrors(data); self.review_saved_ownership()
+        stage = self.restyle(); self.apply(stage)
+        self.assertEqual(self.tool.read(self.paths[0])['tracks'], data['tracks'])
+
+    def test_simultaneous_addition_cannot_overlap_an_omitted_saved_card(self):
+        self.saved_titles(); self.paired_plan()
+        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
+        with self.assertRaisesRegex(ValueError, 'omitted from the plan'): self.restyle()
+
+    def test_reviewed_bounds_reject_overflow_even_when_anchor_is_safe(self):
+        self.plan['cards'][0]['bounds'] = [-1.2, -.8, .2, -.2]
+        with self.assertRaisesRegex(ValueError, 'bounds'): self.stage()
+
+    def test_incremental_restyle_syncs_only_owned_content_and_restores(self):
+        data = self.saved_titles()
+        folder = self.indexed/'attachment/patch'; folder.mkdir(parents=True)
+        ss = [{'id': seg['id'], 'material': {'type': 'text', 'content': next(m['content'] for m in data['materials']['texts'] if m['id'] == seg['material_id'])}}
+              for track in data['tracks'][-2:] for seg in track['segments']]
+        ss.append({'id': 'user-subtitle', 'material': {'content': 'preserve this byte content'}})
+        mini = {'mini_draft_data': {'segments': ss, 'header': {'index': 3}}}
+        (folder/'mini_draft.json').write_text(json.dumps(mini))
+        (folder/'patch.json').write_text('{"patch_data":[]}')
+        self.plan.update(project_sha256=self.tool.digest(self.indexed/'draft_info.json'), sync_incremental_snapshot=True,
+                         style={'title_color': '#ABCDEF'})
+        stage = self.restyle(); self.apply(stage)
+        updated = self.tool.read(folder/'mini_draft.json')
+        self.assertEqual(updated['mini_draft_data']['segments'][-1], ss[-1])
+        self.assertIn('0.670588', updated['mini_draft_data']['segments'][0]['material']['content'])
+        with mock.patch.object(self.tool, 'editor_running', return_value=False): self.tool.restore(stage)
+        self.assertEqual(self.tool.read(folder/'mini_draft.json'), mini)
+
+    def test_nonempty_incremental_patch_is_never_cleared(self):
+        self.saved_titles(); folder = self.indexed/'attachment/patch'; folder.mkdir(parents=True)
+        (folder/'mini_draft.json').write_text('{}')
+        patch = '{"patch_data":[{"user":"edit"}]}'
+        (folder/'patch.json').write_text(patch)
+        self.plan.update(project_sha256=self.tool.digest(self.indexed/'draft_info.json'), sync_incremental_snapshot=True)
+        with self.assertRaisesRegex(ValueError, 'incremental patch'): self.restyle()
+        self.assertEqual((folder/'patch.json').read_text(), patch)
+
+    def test_layout_repair_preserves_populated_subtitles_and_native_animations(self):
+        self.original['materials']['texts'] = [dict(id='caption-'+str(i), type='subtitle', content='manual words',
+            base_content='manual words', background_alpha=.6) for i in range(288)]
+        self.original['tracks'][1]['segments'] = [dict(id='subtitle-segment-'+str(i), material_id='caption-'+str(i)) for i in range(288)]
+        self.save_mirrors(self.original)
+        data = self.saved_titles()
+        self.plan.update(project_sha256=self.tool.digest(self.indexed/'draft_info.json'))
+        self.plan['cards'][0].update(bounds=[-.8, -.5, -.2, -.1], text_layout={'scale': .8, 'title_x': -.5, 'title_y': -.2})
+        self.plan['cards'][0]['evidence']['layout_review'] = 'Reviewed title/role bounds throughout the hold.'
+        stage = self.restyle(); self.apply(stage); updated = self.tool.read(self.paths[0])
+        self.assertEqual(updated['tracks'][1], data['tracks'][1])
+        self.assertEqual(updated['materials']['texts'][:288], data['materials']['texts'][:288])
+        seg = updated['tracks'][-2]['segments'][0]
+        self.assertEqual(seg['clip']['transform'], {'x': -.5, 'y': -.2})
+        self.assertEqual(seg['clip']['scale']['x'], seg['uniform_scale']['value'])
+        self.assertEqual(seg['common_keyframes'], data['tracks'][-2]['segments'][0]['common_keyframes'])
+
+
 if __name__ == '__main__':
     unittest.main()

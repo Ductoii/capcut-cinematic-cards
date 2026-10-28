@@ -58,4 +58,23 @@ def make_text(project_id, card, detail, font, fps):
     for option in ('lut', 'adjust', 'hsl', 'color_curves', 'hsl_curves', 'color_wheels', 'smart_color_adjust',
                    'color_match_adjust', 'color_correct_adjust', 'adjust_mask', 'video_mask', 'mask_stroke', 'mask_shadow', 'color_adjust_pro'):
         segment['enable_' + option] = False
+    apply_text_layout(material, segment, card, detail)
     return material, segment
+
+
+def apply_text_layout(material, segment, card, detail=False):
+    """Only explicit layout overrides; never infer px from native text units."""
+    options = card.get('text_layout', {})
+    role = 'detail' if detail else 'title'
+    for axis in ('x', 'y'):
+        if role+'_'+axis in options:
+            segment['clip']['transform'][axis] = options[role+'_'+axis]
+    if 'scale' in options:
+        scale = options['scale']
+        segment['clip']['scale'] = {'x': scale, 'y': scale}
+        segment['uniform_scale'] = {'on': True, 'value': scale}
+    if 'line_max_width' in options:
+        material['line_max_width'] = options['line_max_width']
+        material['force_apply_line_max_width'] = True
+    if 'fixed_width' in options:
+        material['fixed_width'] = options['fixed_width']

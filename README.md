@@ -14,18 +14,18 @@
 **Mac/Linux**, có Python 3.10 trở lên:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.1/install.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.3/install.py | python3
 ```
 
 **Windows PowerShell**, có Python 3.10 trở lên:
 
 ```powershell
-(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.1/install.py).Content | py -3 -
+(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.3/install.py).Content | py -3 -
 ```
 
 Không biết mở Terminal? Dán link repo này vào **Codex local trên máy có project**, nói: **“Cài skill này cho tôi và chuẩn bị dependency để dùng với CapCut.”** Codex có thể thực hiện lệnh cài giúp bạn. Lệnh tải và chạy mã nguồn công khai trong repo; có thể đọc [installer](install.py) trước khi chạy.
 
-Skill được cài vào `~/.agents/skills/capcut-cinematic-cards` theo [quy ước skill của Codex](https://learn.chatgpt.com/docs/build-skills). Nếu chưa xuất hiện, khởi động lại Codex. Không cần clone repo hoặc sửa JSON. Chạy lại lệnh để cài lại bản 0.1.1; bản cũ được sao lưu. Lệnh được ghim phiên bản, không tự cập nhật sang bản mới.
+Skill được cài vào `~/.agents/skills/capcut-cinematic-cards` theo [quy ước skill của Codex](https://learn.chatgpt.com/docs/build-skills). Nếu chưa xuất hiện, khởi động lại Codex. Không cần clone repo hoặc sửa JSON. Chạy lại lệnh để cài lại bản 0.1.3; bản cũ được sao lưu. Lệnh được ghim phiên bản, không tự cập nhật sang bản mới.
 
 ## Dùng ngay
 
@@ -87,7 +87,10 @@ Project, ảnh, tiếng, font và bản sao lưu ở local; installer chỉ tả
 
 ## Giới hạn đã biết
 
-### Đang phát triển trên main (chưa nằm trong installer v0.1.1)
+### Bản v0.1.3
+
+- Nhãn nhân vật có thể hiện trong thoại; hai nhãn độc lập hiện đồng thời khi đã rà vị trí đúng người và vùng subtitle.
+- Font có thể chọn theo từng card. Restyle giữ các thông số không yêu cầu đổi; có sửa scale đồng bộ, giới hạn chiều rộng, xuống dòng và bố cục có bằng chứng. Không khóa font/style cho mọi phim.
 
 - `probe` xử lý rõ đuôi video ngắn hơn audio/container dưới một frame, ghi timestamp mẫu thực tế và cảnh báo; không che một trim sai dài hơn bằng cách lặp hình. Xuất JPEG có pixel format tương thích.
 - `restyle` giữ chữ, vị trí, timing, keyframe, hiệu ứng và các trường CapCut đã chuẩn hóa. Khi hash đã đổi, Codex phải đối chiếu bản nháp trước và ghi nhận xét với hash hiện tại; không cập nhật ownership trước khi ghi.
