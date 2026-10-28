@@ -22,6 +22,8 @@ A complete 1,779.366666-second local project was analyzed without applying chang
 | True peak | — | −1.70 dBTP |
 | Accepted intervals outside ±2 LU target | — | 0 |
 
+The final complete API/UI run reproduced these values and preserved all project/mirror hashes. Separate quality review found 27 low-score VAD candidates, no decoded source segments near full scale, 56,592 reconstructed-mix samples near full scale, and 185/88,968 measured 20 ms windows with attenuation over 0.5 dB after limiting (maximum RMS attenuation 7.667 dB). Those flags remain visible for listening review; the 27 candidates were not silently excluded.
+
 These are **measurements of the reconstructed mix**, not a promise about every film or proof of native editor rendering. A short source/native-export comparison independently confirmed the separated-audio inventory choice. VAD can include vocals/music and miss speech; mixed music changes with speech gain. Separate quality evidence retains interval VAD scores, near-full-scale samples before source timeline gain, mix near-full-scale samples and measured 20 ms RMS attenuation after limiting. These are review flags, not proof of distortion or calibrated confidence. Singing/music-vocal classification remains unassessed. Zero target deviations does not imply zero quality flags. Full reports and recordings remain private on the user's machine.
 
 Apply and Undo were verified on disposable native-schema projects, including compound/card structural preservation and byte-exact original mirror restoration. The real film was open in CapCut, so it was only read/analyzed. No actual-project write or native CapCut playback/export is claimed; `editor_render_verified` remains false.
