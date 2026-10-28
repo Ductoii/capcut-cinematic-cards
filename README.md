@@ -2,17 +2,17 @@
 
 **Một plugin cho Codex local: thêm cinematic card, cân thoại từng nguồn và gửi yêu cầu tự nhiên về chính chat đang mở.**
 
-[English](README.en.md) · [v0.3.0](https://github.com/Ductoii/capcut-cinematic-cards/releases/tag/v0.3.0) · [MIT](LICENSE)
+[English](README.en.md) · [v0.3.1](https://github.com/Ductoii/capcut-cinematic-cards/releases/tag/v0.3.1) · [MIT](LICENSE)
 
 ## Cài một dòng
 
 Máy có Codex desktop, Python 3.10–3.13 và FFmpeg/ffprobe:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.3.0/install-harness.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.3.1/install-harness.py | python3
 ```
 
-Không rành Terminal? Gửi link repo cho Codex **trên máy có project**, nói: “Cài CapCut Harness v0.3.0, chuẩn bị dependency và mở workspace. Không computer use.” Codex thực hiện phần cài đặt; không cần sửa JSON.
+Không rành Terminal? Gửi link repo cho Codex **trên máy có project**, nói: “Cài CapCut Harness v0.3.1, chuẩn bị dependency và mở workspace. Không computer use.” Codex thực hiện phần cài đặt; không cần sửa JSON.
 
 Bộ cài tạo runtime riêng, đăng ký plugin/MCP bằng CLI của Codex và gộp card + audio vào skill `capcut-harness`. Bản cũ do bộ cài quản lý được sao lưu. Service cũ chỉ dừng khi không có job đang chạy và xác định đúng tiến trình thuộc bộ cài. Không tắt CapCut.
 
@@ -36,6 +36,14 @@ Ví dụ:
 Yêu cầu có trạng thái đã lưu, đã gửi, đã nhận, đang làm và kết quả. Khi host chưa xác nhận gửi, panel báo chưa rõ trạng thái và không tự gửi lại. Các yêu cầu khác vẫn do Codex hiểu theo khả năng công cụ hiện có; không còn giới hạn ở vài mẫu câu.
 
 **UI trình duyệt độc lập** (`~/.local/bin/capcut-harness`) vẫn dành cho công việc local và nghe audio, nhưng không có cầu nối chat. Dùng panel từ skill cho ô yêu cầu tự nhiên. Nếu tool chưa xuất hiện sau cài, nhờ Codex sửa đăng ký bằng `install-harness.py --register-only`; không sửa cấu hình tay. Hỗ trợ panel và cầu nối tùy phiên bản host; cài thành công không đồng nghĩa đã chứng minh host hiển thị/gửi tin thành công.
+
+## Project và kịch bản
+
+Danh sách tự lấy toàn bộ mục trong kho CapCut, index project, thư mục lưu tùy chỉnh trong cài đặt và project được hệ điều hành lập chỉ mục. Nút **Quét lại project** cập nhật danh sách mà không mở CapCut. Project mã hóa/rỗng/chưa hỗ trợ vẫn hiện; khi chọn sẽ báo lý do chưa sửa được. Đường dẫn đã lưu không còn truy cập được cũng được báo rõ khi chọn. Việc tìm project ngoài kho phụ thuộc quyền truy cập và chỉ mục hệ điều hành; không cam kết tìm được file bị ẩn khỏi hệ thống hoặc ổ chưa gắn.
+
+Trong **Cinematic cards**, dán kịch bản vào ô text hoặc chọn file UTF-8 `.txt`/`.md` (tối đa 512 KB). Bấm **Gửi kịch bản làm timecard**: kịch bản lưu riêng cho project đang chọn, yêu cầu gửi về chat và trỏ đến đúng bản đã gửi. **Lưu kịch bản** chỉ lưu, chưa yêu cầu làm card. Các yêu cầu card tiếp theo tự mang kịch bản hiện có. Nội dung không được ghi vào draft CapCut.
+
+Codex đọc kịch bản cùng cảnh/thoại trên timeline để chọn mốc; không lấy vị trí đoạn văn làm timestamp. Đặt time/location card khi thực sự cần, ưu tiên mờ đen và giữ clip ghép. Đổi kịch bản sau khi gửi không thay đổi bản đang được xử lý.
 
 ## Cân thoại cho phim online
 
@@ -68,6 +76,6 @@ Codex đọc kịch bản/phụ đề và frame để quyết định vị trí.
 
 Project JSON local đọc được, schema `360000`; không hỗ trợ draft mã hóa hoặc audio routing/effect/tốc độ biến thiên chưa hiểu rõ. Chạy bằng file và công cụ local; không Computer Use, không API key âm thanh. Audio không được upload bởi harness; lời nhắn và kết quả tool vẫn đi qua chat Codex như bình thường.
 
-v0.3.0 có kiểm tra cú pháp/đóng gói và cài plugin local; không thực hiện vòng 300 nguồn hoặc nghe/kiểm tra lại phim thật theo yêu cầu chủ dự án. Các kết quả kiểm thử v0.2.0 trong [lịch sử](docs/verification.md) không phải bằng chứng cho engine mới. Audio dựng từ nguồn không chứng minh playback/export native CapCut; báo cáo giữ `editor_render_verified: false`. Không khôi phục được tiếng đã méo trong file gốc. macOS là môi trường phát triển; các hệ điều hành khác chưa được xác minh.
+v0.3.1 có kiểm tra cú pháp/đóng gói và cài plugin local; không thực hiện vòng 300 nguồn hoặc nghe/kiểm tra lại phim thật theo yêu cầu chủ dự án. Các kết quả kiểm thử v0.2.0 trong [lịch sử](docs/verification.md) không phải bằng chứng cho engine mới. Audio dựng từ nguồn không chứng minh playback/export native CapCut; báo cáo giữ `editor_render_verified: false`. Không khôi phục được tiếng đã méo trong file gốc. macOS là môi trường phát triển; các hệ điều hành khác chưa được xác minh.
 
 [Kiến trúc phát triển](docs/harness-development.md) · [Quyết định](docs/review-and-decisions.md) · [Bản card độc lập cũ v0.1.1](https://github.com/Ductoii/capcut-cinematic-cards/tree/v0.1.1)

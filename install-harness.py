@@ -17,7 +17,7 @@ import uuid
 import zipfile
 
 REPO='Ductoii/capcut-cinematic-cards'
-VERSION='v0.3.0'
+VERSION='v0.3.1'
 NAMES=('capcut-harness',)
 LAUNCH_MARKER='# Managed by Ductoii/capcut-cinematic-cards harness installer'
 MAX_ARCHIVE=20_000_000

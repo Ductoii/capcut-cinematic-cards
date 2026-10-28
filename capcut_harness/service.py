@@ -17,6 +17,8 @@ from .audio import analyze,render,parameters,write_json
 from .source_audio import analyze_sources,render_sources
 from . import transaction
 from .workspace import Workspace
+from .scripts import Scripts
+from .discovery import directories,metadata
 
 
 class Service:
@@ -26,16 +28,18 @@ class Service:
         self.requests=cards.read(self.root/'requests.json') if (self.root/'requests.json').exists() else {}
         self.queue=queue.Queue();self.stop=threading.Event();self.cancel_events={};self.closed=False
         self.workspace=Workspace(self);self.media_caps={}
-        roots=cards.project_roots() if project_roots is None else project_roots
-        for root in roots:
-            root=Path(root).expanduser()
-            if root.is_dir():
-                candidates=[root] if (root/'draft_info.json').exists() else list(root.iterdir())
-                for project in candidates:
-                    if (project/'draft_info.json').is_file():
-                        try:self.register(project)
-                        except (ValueError,OSError):pass
+        self.scripts=Scripts(self);self.discovery_roots=project_roots
+        self.discover()
         self.worker=threading.Thread(target=self._worker,name='capcut-harness-jobs',daemon=True);self.worker.start()
+
+    def discover(self):
+        paths,errors=directories(self.discovery_roots)
+        with self.lock:
+            for path in paths:
+                ident=hashlib.sha256(str(path).encode()).hexdigest()[:16]
+                self.registry[ident]={**self.registry.get(ident,{}),**metadata(path), 'id':ident}
+            self.store.write(self.root/'projects.json',self.registry)
+        return dict(found=len(paths),total=len(self.registry),warnings=errors)
 
     def register(self,path):
         project,_,data,_,_=cards.load(Path(path))
@@ -54,7 +58,12 @@ class Service:
             return copy.deepcopy(self.registry[ident])
 
     def inspect(self,project_id):
-        record=self._project(project_id);info=cards.inspect(record['path'])
+        record=self._project(project_id)
+        try:info=cards.inspect(record['path'])
+        except (ValueError,OSError,KeyError) as exc:
+            return dict(record,editable=False,unavailable_reason=str(exc),fps=None,schema=None,cards=[],
+                        editor_running=cards.editor_running(),script=self.scripts.summary(project_id))
+        info['editable']=True;info['script']=self.scripts.summary(project_id)
         info.update(id=project_id,name=record['name'],editor_running=cards.editor_running())
         # Existing native text is displayed as data, never inferred from a face.
         _,_,data,_,_=cards.load(record['path']);texts={m['id']:m for m in data['materials'].get('texts',[])}
@@ -98,6 +107,8 @@ class Service:
 
     def _dispatch(self,a):
         name=a.get('action')
+        if name=='project.discover':return self.discover()
+        if name=='script.save':return self.scripts.save(a['project_id'],a['text'],a.get('file_name','Kịch bản.txt'))
         if name=='project.register':return self.register(a['path'])
         if name in ('project.inspect','cards.inspect'):return self.inspect(a['project_id'])
         if name=='dialogue.cancel':

@@ -51,7 +51,7 @@ window.CapCutHost=window.CAPCUT_MCP?(()=>{
     }
     return id;
   }
-  request('ui/initialize',{appInfo:{name:'capcut-harness',version:'0.3.0'},appCapabilities:{},protocolVersion:'2026-01-26'})
+  request('ui/initialize',{appInfo:{name:'capcut-harness',version:'0.3.1'},appCapabilities:{},protocolVersion:'2026-01-26'})
     .then(()=>{initialized=true;window.parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized'},'*');settle();
       request('ui/request-display-mode',{mode:'fullscreen'}).catch(()=>{});})
     .catch(readyReject);

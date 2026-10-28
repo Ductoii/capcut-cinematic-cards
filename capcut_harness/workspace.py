@@ -55,7 +55,14 @@ class Workspace:
         if project_id:self.service._project(project_id)
         with self.lock:
             self.connection(connection_id,thread_id)
-            body=dict(connection_id=connection_id,text=text,project_id=project_id,context=context or {})
+            context=copy.deepcopy(context or {})
+            if project_id:
+                summary=self.service.scripts.summary(project_id)
+                signature=context.get('script_sha256') or (summary or {}).get('sha256')
+                if signature:
+                    script=self.service.scripts.read(project_id,signature)
+                    context['script']=dict(sha256=signature,characters=script['characters'],data_path=f'/api/projects/{project_id}/scripts/{signature}')
+            body=dict(connection_id=connection_id,text=text,project_id=project_id,context=context)
             if ident in self.data['requests']:
                 saved=self.data['requests'][ident]
                 if saved['input_hash']!=cards.object_hash(body):raise ValueError('Request ID reused with different input')

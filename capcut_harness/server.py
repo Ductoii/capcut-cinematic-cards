@@ -74,6 +74,8 @@ def create_server(service,port=0):
                 if path=='/api/jobs':return self.json_response(200,service.jobs())
                 m=re.fullmatch(r'/api/jobs/([a-f0-9]{2,40})',path)
                 if m:return self.json_response(200,service.job(m.group(1)))
+                script=re.fullmatch(r'/api/projects/([a-f0-9]{16})/scripts/([a-f0-9]{64})',path)
+                if script:return self.json_response(200,service.scripts.read(*script.groups()))
                 m=re.fullmatch(r'/api/projects/([a-f0-9]{16})',path)
                 if m:return self.json_response(200,service.inspect(m.group(1)))
                 m=re.fullmatch(r'/media/([a-f0-9]{2,40})/(before\.wav|after\.wav|master\.wav)',path)
@@ -154,6 +156,8 @@ def workspace_action(service,data):
     if op=='requests':return w.list(data['connection_id'],thread)
     if op=='data':
         w.connection(data['connection_id'],thread);path=data.get('path','')
+        script=re.fullmatch(r'/api/projects/([a-f0-9]{16})/scripts/([a-f0-9]{64})',path)
+        if script:return service.scripts.read(*script.groups())
         if path=='/api/bootstrap':return dict(version=__version__,capabilities=CAPABILITIES,chat_bridge=True)
         if path=='/api/projects':return service.projects()
         if path=='/api/jobs':return service.jobs()

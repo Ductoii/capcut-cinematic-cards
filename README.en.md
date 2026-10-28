@@ -2,17 +2,17 @@
 
 **One local Codex plugin for cinematic cards, per-source dialogue leveling and freeform requests sent to the same chat.**
 
-[Tiếng Việt](README.md) · [v0.3.0](https://github.com/Ductoii/capcut-cinematic-cards/releases/tag/v0.3.0) · [MIT](LICENSE)
+[Tiếng Việt](README.md) · [v0.3.1](https://github.com/Ductoii/capcut-cinematic-cards/releases/tag/v0.3.1) · [MIT](LICENSE)
 
 ## One-line install
 
 Requires Codex desktop, Python 3.10–3.13 and FFmpeg/ffprobe:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.3.0/install-harness.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.3.1/install-harness.py | python3
 ```
 
-Alternatively, give this repository to local Codex on the computer containing the project and ask it to install v0.3.0, prepare dependencies and open the workspace without Computer Use. No manual JSON editing.
+Alternatively, give this repository to local Codex on the computer containing the project and ask it to install v0.3.1, prepare dependencies and open the workspace without Computer Use. No manual JSON editing.
 
 The installer creates a private runtime and registers a local plugin/MCP with the native Codex CLI. Cards and audio share `capcut-harness`. Managed previous installations are backed up. An old service is stopped only when idle and its process belongs to this installation. CapCut is never terminated.
 
@@ -32,6 +32,12 @@ Examples: “Add only necessary time/location cards at existing black fades”; 
 Durable requests show saved, sent, acknowledged, working and terminal states. Unconfirmed delivery is marked uncertain and never automatically resent. Other requests are interpreted by Codex according to its available tools; the box has no finite command grammar.
 
 The standalone HTTP UI (`~/.local/bin/capcut-harness`) supports local jobs/listening but has no chat bridge. Open the skill's MCP panel for freeform messages. If tools are missing, ask Codex to repair native registration using `install-harness.py --register-only`. Panel rendering/message support depends on the host version; installation alone does not prove that the host rendered or delivered a message.
+
+## Projects and screenplays
+
+The catalog reads CapCut stores/indexes, custom save paths in settings and OS-indexed project files. **Quét lại project** refreshes the list. Encrypted/empty/unsupported projects remain visible and show an editing reason when selected. Finding projects outside stores depends on filesystem access and OS indexing; hidden/unmounted locations cannot be guaranteed.
+
+In **Cinematic cards**, paste a screenplay or choose a UTF-8 `.txt`/`.md` file up to 512 KB. **Gửi kịch bản làm timecard** saves it for the selected project and sends a same-chat request linked to that exact revision. **Lưu kịch bản** saves without requesting cards. Later project requests include the saved screenplay automatically. Scripts stay outside the CapCut draft; editing a script later cannot alter an already-submitted revision. Codex aligns story context with actual timeline scenes/dialogue, never paragraph positions as timestamps.
 
 ## Online-film dialogue preset
 
@@ -62,6 +68,6 @@ Codex uses screenplay/caption/frame evidence; this is not guaranteed automatic f
 
 Readable unencrypted local JSON schema `360000`; unknown routing, audible effects and variable speed are refused. Local file tools only, no Computer Use or audio API key. Harness does not upload audio; chat messages/tool context use Codex normally.
 
-v0.3.0 receives syntax/package checks and local plugin installation. The owner opted out of a 300-source or real-film recheck/listening cycle. Historical v0.2.0 [test results](docs/verification.md) do not validate the new engine. Reconstructed source audio is not proof of native CapCut playback/export; reports retain `editor_render_verified: false`. Distortion already in a source cannot be repaired by leveling. macOS is the development environment; other operating systems remain unverified.
+v0.3.1 receives syntax/package checks and local plugin installation. The owner opted out of a 300-source or real-film recheck/listening cycle. Historical v0.2.0 [test results](docs/verification.md) do not validate the new engine. Reconstructed source audio is not proof of native CapCut playback/export; reports retain `editor_render_verified: false`. Distortion already in a source cannot be repaired by leveling. macOS is the development environment; other operating systems remain unverified.
 
 [Developer architecture](docs/harness-development.md) · [Decisions](docs/review-and-decisions.md) · [Legacy standalone cards v0.1.1](https://github.com/Ductoii/capcut-cinematic-cards/tree/v0.1.1)

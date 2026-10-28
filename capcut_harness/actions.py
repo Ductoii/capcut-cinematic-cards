@@ -5,7 +5,7 @@ import unicodedata
 CAPABILITIES=[
     dict(id='dialogue',name='Cân âm thoại',actions=['dialogue.analyze','dialogue.render','dialogue.apply','dialogue.undo','dialogue.cancel','dialogue.retry']),
     dict(id='cards',name='Cinematic cards',actions=['cards.inspect','cards.stage','cards.apply','cards.verify','cards.restore']),
-    dict(id='projects',name='Project',actions=['project.register','project.inspect']),
+    dict(id='projects',name='Project',actions=['project.register','project.inspect','project.discover','script.save']),
 ]
 
 

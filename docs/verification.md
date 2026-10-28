@@ -42,3 +42,7 @@ Scope follows the owner's explicit opt-out from additional recheck/review, a 300
 - Installed stdio MCP returned initialization, six tools, a workspace connection and a self-contained `text/html;profile=mcp-app` resource.
 - Initial discovery exceeded the original eight-second startup grace; increased it to 25 seconds.
 - Host rendering and UI-to-chat message delivery have not been observed in this already-open chat. A fresh chat must discover the plugin tools. No native CapCut playback/export or listening-quality claim is made for v0.3.0; historical tests below/above apply to their recorded versions only.
+
+## v0.3.1 — project catalog and screenplay submission
+
+Local discovery reads CapCut stores/indexes, configured paths and OS search metadata without validating every timeline. A metadata-only scan found 289 project folders before expanding OS search to root draft files. A disposable script-storage run confirmed that a request keeps its submitted revision after a newer screenplay is saved. Python/JavaScript syntax and package checks are the scope for this update; no audio/full-film recheck, editor write or native host bridge claim.

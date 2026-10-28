@@ -12,7 +12,7 @@ from . import __version__
 from .__main__ import existing_client
 from .workspace import caller_thread
 
-RESOURCE='ui://capcut-harness/workspace-v030.html'
+RESOURCE='ui://capcut-harness/workspace-v031.html'
 WEB=Path(__file__).parent/'web'
 STATE=Path(os.environ.get('CAPCUT_HARNESS_STATE',Path.home()/'.local/share/capcut-harness')).expanduser().resolve()
 

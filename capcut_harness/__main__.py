@@ -29,7 +29,7 @@ class Client:
         self.url=url.rstrip('/');self.token='';self.token=self.request('/api/bootstrap')['token']
 
     def request(self,path,data=None):
-        request=urllib.request.Request(self.url+path,data=json.dumps(data).encode() if data is not None else None,
+        request=urllib.request.Request(self.url+path,data=json.dumps(data,ensure_ascii=False).encode() if data is not None else None,
             headers={'X-Harness-Token':self.token,'Origin':self.url,'Content-Type':'application/json'})
         try:
             with urllib.request.urlopen(request,timeout=30) as response:return json.load(response)
