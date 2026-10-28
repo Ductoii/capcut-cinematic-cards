@@ -1,6 +1,0 @@
-interface:
-  display_name: "CapCut Harness"
-  short_description: "Same-chat editing panel, cinematic cards and film dialogue"
-  default_prompt: "Use $capcut-harness to open the local editing panel beside this chat and handle my CapCut requests here, preserving my compound edits."
-policy:
-  allow_implicit_invocation: true

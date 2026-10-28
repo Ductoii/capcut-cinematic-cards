@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "capcut-harness": {
-      "command": "python3",
-      "args": ["-m", "capcut_harness.mcp"]
-    }
-  }
-}

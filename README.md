@@ -1,81 +1,106 @@
-# CapCut Harness
+# CapCut Cinematic Cards
 
-**Một plugin cho Codex local: thêm cinematic card, cân thoại từng nguồn và gửi yêu cầu tự nhiên về chính chat đang mở.**
+**Cân âm thanh dùng tool riêng:** [CapCut Audio](https://github.com/Ductoii/capcut-audio), chạy local bằng thuật toán, không cần Codex. Repo này chỉ giữ skill card độc lập.
 
-[English](README.en.md) · [v0.3.1](https://github.com/Ductoii/capcut-cinematic-cards/releases/tag/v0.3.1) · [MIT](LICENSE)
+
+**Bảo Codex thêm time card, location card và giới thiệu nhân vật cho phim CapCut — giữ nguyên clip ghép.**
+
+[English](README.en.md) · [Hướng dẫn dành cho Codex](skills/capcut-cinematic-cards/SKILL.md) · [MIT](LICENSE)
+
+Đây là **skill + công cụ Python chạy local**. Codex đọc phim/kịch bản, chọn chỗ cần chữ và cách trình bày; công cụ tạo text có thể sửa trong CapCut, sao lưu và kiểm tra dữ liệu. Không cần Computer Use, MCP hay API key riêng. Dùng model của phiên Codex hiện tại.
 
 ## Cài một dòng
 
-Máy có Codex desktop, Python 3.10–3.13 và FFmpeg/ffprobe:
+**Mac/Linux**, có Python 3.10 trở lên:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.3.1/install-harness.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.1/install.py | python3
 ```
 
-Không rành Terminal? Gửi link repo cho Codex **trên máy có project**, nói: “Cài CapCut Harness v0.3.1, chuẩn bị dependency và mở workspace. Không computer use.” Codex thực hiện phần cài đặt; không cần sửa JSON.
+**Windows PowerShell**, có Python 3.10 trở lên:
 
-Bộ cài tạo runtime riêng, đăng ký plugin/MCP bằng CLI của Codex và gộp card + audio vào skill `capcut-harness`. Bản cũ do bộ cài quản lý được sao lưu. Service cũ chỉ dừng khi không có job đang chạy và xác định đúng tiến trình thuộc bộ cài. Không tắt CapCut.
+```powershell
+(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.1/install.py).Content | py -3 -
+```
 
-## Dùng trong Codex
+Không biết mở Terminal? Dán link repo này vào **Codex local trên máy có project**, nói: **“Cài skill này cho tôi và chuẩn bị dependency để dùng với CapCut.”** Codex có thể thực hiện lệnh cài giúp bạn. Lệnh tải và chạy mã nguồn công khai trong repo; có thể đọc [installer](install.py) trước khi chạy.
 
-Sau khi cài, mở **chat Codex local mới** và gửi:
+Skill được cài vào `~/.agents/skills/capcut-cinematic-cards` theo [quy ước skill của Codex](https://learn.chatgpt.com/docs/build-skills). Nếu chưa xuất hiện, khởi động lại Codex. Không cần clone repo hoặc sửa JSON. Chạy lại lệnh để cài lại bản 0.1.1; bản cũ được sao lưu. Lệnh được ghim phiên bản, không tự cập nhật sang bản mới.
+
+## Dùng ngay
+
+Mở chat Codex trên máy có CapCut/project rồi gửi:
 
 ```text
-$capcut-harness
-Mở workspace cho project 1027.
+$capcut-cinematic-cards
+Thêm time card và location card thực sự cần thiết cho project “Tên project”.
+Thêm tên và vai trò ngắn cho nhân vật chính ở lần xuất hiện đầu tiên có thể xác nhận.
+Chọn kiểu chữ cinematic phù hợp với chất phim, ưu tiên các đoạn chuyển mờ đen.
+Không che cảnh quan trọng, mặt, phản ứng hay thoại; không động vào clip ghép của tôi.
+Không computer use. Kịch bản và reference nhân vật ở: [đường dẫn hoặc file tôi gửi].
 ```
 
-Plugin cần host hỗ trợ MCP Apps và `ui/message`. Panel có chọn project, card, cân thoại, nghe A/B, Apply/Undo và ô gửi yêu cầu. Ô này gửi lời nhắn vào **chính chat chứa panel**; Codex dùng công cụ như khi bạn nhắn trực tiếp. Nó không gọi một model thứ hai. Host có thể yêu cầu xác nhận gửi; quyết định đó thuộc Codex.
+Thay tên project/nguồn bằng thông tin của bạn trong **tin nhắn**, hoặc gửi thẳng đường dẫn project. Bạn không phải tạo plan, chọn timestamp, sửa file draft hay viết code; Codex làm các bước đó. Nếu bạn không cần giới thiệu nhân vật, bỏ câu đó khỏi yêu cầu.
 
-Ví dụ:
+Nếu đã biết hướng mỹ thuật, nói thêm, ví dụ:
 
-- “Chỉ thêm time/location card thật sự cần ở các đoạn chuyển mờ đen, tránh thoại và cảnh quan trọng.”
-- “Giới thiệu nhân vật chính ở lần xuất hiện đầu, có tên và vai trò, chữ hợp phim này.”
-- “Cân thoại giữa các clip cho đều và rõ; giữ sắc thái diễn xuất, hình và clip ghép.”
+- “Drama gia đình cổ điển: serif màu ngà, chữ kín đáo, fade chậm.”
+- “Thriller hiện đại: sans gọn, trắng lạnh, nhịp hiện dứt khoát.”
+- “Phim tài liệu: chữ trung tính, ưu tiên đọc rõ và thông tin.”
+- “Tình cảm: serif mềm, màu ấm, hiệu ứng nhẹ.”
 
-Yêu cầu có trạng thái đã lưu, đã gửi, đã nhận, đang làm và kết quả. Khi host chưa xác nhận gửi, panel báo chưa rõ trạng thái và không tự gửi lại. Các yêu cầu khác vẫn do Codex hiểu theo khả năng công cụ hiện có; không còn giới hạn ở vài mẫu câu.
+Bản **0.1.1** bổ sung mặc định tên + vai trò, cỡ chữ 6.2/3.8 trong đơn vị CapCut và vị trí hai dòng -0.64/-0.77 cho card nhân vật; có thể tùy biến theo phim. Các card thời gian/địa điểm giữ mặc định riêng.
 
-**UI trình duyệt độc lập** (`~/.local/bin/capcut-harness`) vẫn dành cho công việc local và nghe audio, nhưng không có cầu nối chat. Dùng panel từ skill cho ô yêu cầu tự nhiên. Nếu tool chưa xuất hiện sau cài, nhờ Codex sửa đăng ký bằng `install-harness.py --register-only`; không sửa cấu hình tay. Hỗ trợ panel và cầu nối tùy phiên bản host; cài thành công không đồng nghĩa đã chứng minh host hiển thị/gửi tin thành công.
+Codex lựa font có sẵn trên máy, màu, cỡ, khoảng cách, vị trí và thời gian fade theo phim. Có 5 điểm xuất phát: drama, thriller, tài liệu, tình cảm, noir; có thể tùy chỉnh từng card trong cùng hệ thống. Bản này tạo typography, bóng nhẹ và opacity fade; chưa có glitch, tracking động, freeze frame hay effect pack.
 
-## Project và kịch bản
+## Giới thiệu nhân vật có khả thi không?
 
-Danh sách tự lấy toàn bộ mục trong kho CapCut, index project, thư mục lưu tùy chỉnh trong cài đặt và project được hệ điều hành lập chỉ mục. Nút **Quét lại project** cập nhật danh sách mà không mở CapCut. Project mã hóa/rỗng/chưa hỗ trợ vẫn hiện; khi chọn sẽ báo lý do chưa sửa được. Đường dẫn đã lưu không còn truy cập được cũng được báo rõ khi chọn. Việc tìm project ngoài kho phụ thuộc quyền truy cập và chỉ mục hệ điều hành; không cam kết tìm được file bị ẩn khỏi hệ thống hoặc ổ chưa gắn.
+**Có**, khi xác nhận được nhân vật và lần xuất hiện đầu. Codex đối chiếu kịch bản/reference, rà các cảnh trước đó rồi đặt tên ở khoảnh khắc yên sau khi người xem nhận ra nhân vật. Mặc định có **tên + vai trò ngắn** (nghề nghiệp hoặc quan hệ đã được xác lập), chữ vai trò nhỏ hơn tên nhưng vẫn đọc rõ. Không gắn nhãn phản diện hay tiết lộ tương lai của nhân vật. Nếu bạn chỉ muốn tên, vai trò chưa rõ hoặc có nguy cơ spoil, Codex ghi lý do và bỏ riêng dòng vai trò.
 
-Trong **Cinematic cards**, dán kịch bản vào ô text hoặc chọn file UTF-8 `.txt`/`.md` (tối đa 512 KB). Bấm **Gửi kịch bản làm timecard**: kịch bản lưu riêng cho project đang chọn, yêu cầu gửi về chat và trỏ đến đúng bản đã gửi. **Lưu kịch bản** chỉ lưu, chưa yêu cầu làm card. Các yêu cầu card tiếp theo tự mang kịch bản hiện có. Nội dung không được ghi vào draft CapCut.
+Không đoán tên từ khuôn mặt, không spoil người đang được giấu danh tính, không giới thiệu mọi nhân vật phụ. Nếu đoạn ra mắt có thoại hoặc phản ứng quan trọng, dời trong cùng cảnh hoặc bỏ card. Đây là lựa chọn biên tập của Codex dựa trên bằng chứng, không phải công cụ tự nhận diện khuôn mặt chính xác tuyệt đối.
 
-Codex đọc kịch bản cùng cảnh/thoại trên timeline để chọn mốc; không lấy vị trí đoạn văn làm timestamp. Đặt time/location card khi thực sự cần, ưu tiên mờ đen và giữ clip ghép. Đổi kịch bản sau khi gửi không thay đổi bản đang được xử lý.
+## Chuẩn bị trên máy khác
 
-## Cân thoại cho phim online
+| Cần có | Để làm gì |
+|---|---|
+| Codex local có quyền đọc file và chạy terminal | Phân tích, chọn card và gọi công cụ |
+| Python 3.10+ | Cài và chỉnh dữ liệu project, chỉ dùng thư viện chuẩn |
+| FFmpeg + ffprobe trên PATH | Trích khung hình/âm thanh quanh vị trí dự kiến |
+| Project CapCut local và media gốc còn truy cập được | Đọc timeline, xem cảnh, nghe thoại |
+| Kịch bản/caption/reference có thể xác minh | Xác định thời gian, địa điểm và nhân vật |
+| Font local hỗ trợ ngôn ngữ của phim | Hiển thị chữ đúng; repo không kèm font |
 
-Preset mặc định dùng **−16 LUFS làm mốc thoại, trần −1,5 dBTP**, stereo 48 kHz PCM24. Đây là lựa chọn khởi đầu cho phim online, không phải chứng nhận hay một chuẩn bắt buộc chung cho mọi phim/MV YouTube. Vạch vàng chỉ cho biết peak tức thời, không đủ so độ to cảm nhận giữa các nguồn.
+Nhờ Codex kiểm tra/chuẩn bị phần thiếu qua terminal. Không cần tài khoản dịch vụ nhận diện hay key trả phí khác. Một phiên chat cloud không truy cập được file trên máy sẽ không thể xử lý project local.
 
-Harness xử lý:
+**Lưu và đóng CapCut trước khi áp dụng.** Codex có thể phân tích và tạo bản chờ trước; công cụ sẽ từ chối ghi nếu editor đang chạy, không tự kill app. Nếu có thay đổi chưa lưu, phải lưu an toàn trước khi tiếp tục.
 
-1. Tách theo từng nguồn đang nghe được trên timeline; giữ trim, tốc độ đều, volume và fade được hỗ trợ.
-2. Nhận diện thoại trên từng nguồn, tăng mức riêng cho đầu vào detector khi cần; mức tăng này không tự đi vào audio đầu ra.
-3. Cân mỗi take theo trung vị LUFS có trọng số thời lượng; tinh chỉnh câu trong biên độ nhỏ để giữ diễn xuất.
-4. Nén RMS nhẹ 2:1, attack 15 ms/release 180 ms để thu các âm tiết vọt lên; bù mức có giới hạn.
-5. Bảo vệ peak từng nguồn, trộn lại rồi giới hạn peak master. Nguồn không nhận diện thoại được giữ mức và báo riêng.
+## Bảo vệ phim đang dựng
 
-Mức bù tối đa mặc định 48 dB giúp các file rất nhỏ vẫn có thể được cân; đồng thời có thể kéo cả noise lên. Nhạc/SFX nằm ở track riêng không bị kéo theo gain của thoại. Nhạc, tiếng nền hay giọng hát đã trộn vào cùng một file vẫn đi theo file đó; không có tách stem hoặc nhận dạng nhân vật từ giọng.
+- Chỉ thêm các track text riêng bên ngoài compound clip; giữ nguyên clip ghép, âm thanh, thời lượng và chuyển cảnh gốc.
+- Chọn card cần thiết. Mặc định khoảng 3.2–3.6 giây, không ép chữ vào fade 1.5 giây bằng cách kéo màn đen che cảnh.
+- Xem vùng trước/sau và toàn thời gian chữ hiện; tránh mặt, bàn tay, đồ vật, phụ đề, thoại và các phản ứng quan trọng.
+- Sao lưu bên ngoài project trước khi ghi. Kiểm tra hash, dữ liệu gốc và các mirror của timeline; chặn ghi đè khi project đã thay đổi.
+- Chạy lại chỉ thay card do skill quản lý chính xác. Nếu bạn hoặc CapCut đã sửa/chuẩn hóa chúng, công cụ dừng để Codex đối chiếu, không ép ghi đè.
+- Có khôi phục có kiểm tra. Bảo Codex: **“Khôi phục lần thêm card vừa rồi từ bản sao lưu, giữ các thay đổi tôi làm sau đó.”** Nếu xung đột, công cụ giữ thay đổi mới và báo rõ; không hứa rollback tự động mọi tình huống.
 
-Bấm **Cân âm thoại** để chuẩn bị bản nghe; project chưa thay đổi. Có thể nghe A/B, đổi mục tiêu, bỏ chọn khoảng nhận nhầm rồi cập nhật. Khoảng bỏ chọn lấy lại audio nguồn trước khi trộn; limiter master vẫn áp dụng toàn bản. Báo cáo hiển thị độ phủ nguồn, khoảng còn lệch và các trường hợp cần chú ý. Không tự chạy thêm một vòng kiểm tra/nghe cả phim ngoài công việc được yêu cầu.
+Project, ảnh, tiếng, font và bản sao lưu ở local; installer chỉ tải skill công khai. Skill không tải media lên dịch vụ riêng. File bạn đưa vào phiên Codex vẫn chịu cách xử lý dữ liệu của phiên đó.
 
-Khi áp dụng, **lưu và đóng CapCut**. Harness thêm một master audio ngoài clip ghép, tắt âm các đoạn gốc tham gia mix để tránh phát đôi, giữ hình, cấu trúc compound và card. Undo dùng backup chính xác và từ chối ghi đè nếu có chỉnh sửa mới. Không xóa `~/.local/share/capcut-harness`: đây là nơi lưu job, bản nghe và backup; phim dài có thể tốn nhiều GB.
+## Giới hạn đã biết
 
-## Cinematic card
+- Chỉ ghi draft JSON **không mã hóa, schema `360000`**. Định dạng khác sẽ dừng; không đổi schema bằng tay để vượt kiểm tra.
+- Đường dẫn mặc định hỗ trợ tìm project macOS/Windows; có thể truyền đường dẫn chính xác. Mã xử lý file dùng Python đa nền tảng. Chạy file và media đã được kiểm tra trên macOS; chưa xác minh CapCut native trên Windows/Linux.
+- Hỗ trợ map compound lồng, trim và tốc độ cố định. Reverse, loop, curve speed và compound ngoài chưa được map; Codex phải bỏ/defer vị trí thiếu bằng chứng.
+- Khung hình trích từ nguồn **chưa compositing**. Crop, hiệu ứng, overlay, phụ đề và transition cần được đối chiếu từ draft; ảnh nguồn không chứng minh được kết quả cuối trong CapCut.
+- Kiểm tra file thành công chứng minh dữ liệu gốc được giữ, **không chứng minh CapCut đã render/playback đúng**. Skill phải nói rõ trạng thái này. Không có renderer CapCut hoặc thao tác GUI đi kèm.
 
-- Time/location chỉ khi cần định hướng; ưu tiên fade đen có sẵn đủ thời gian đọc, không kéo dài fade để nhét chữ.
-- Giới thiệu nhân vật tại lần xuất hiện đã xác nhận, gồm tên + vai trò ngắn đã có bằng chứng; không đoán tên, bịa nghề hoặc tiết lộ twist.
-- Chọn font cài sẵn, màu, cỡ, spacing, vị trí và opacity fade hợp thể loại; mỗi phim có thể khác nhau.
-- Thêm text native ở root track riêng; không sửa clip ghép, cảnh, thoại hoặc transition gốc. Helper hỗ trợ dựng plan/stage/backup/restore; không có gói hiệu ứng glitch hay chữ chuyển động phức tạp.
+## Cho người phát triển
 
-Codex đọc kịch bản/phụ đề và frame để quyết định vị trí. Không phải công cụ nhận mặt bảo đảm đúng mọi nhân vật. [Hướng dẫn card](skills/capcut-harness/references/cards.md) · [Lệnh/plan](skills/capcut-harness/references/tool.md).
+```bash
+python3 -m unittest discover -s tests -v
+```
 
-## Phạm vi và tình trạng
+30 test đã chạy đạt trên macOS, gồm trích hình/tiếng FFmpeg bằng media giả. Các test dùng project giả, không sửa phim thật: giữ compound/audio, mirror, tránh thoại, bằng chứng nhân vật, tùy chỉnh style, stale input, editor busy, apply/restore, ownership, installer và bảo vệ đường dẫn. CI chưa được bật; chưa tuyên bố đã chạy test trên Windows/Linux.
 
-Project JSON local đọc được, schema `360000`; không hỗ trợ draft mã hóa hoặc audio routing/effect/tốc độ biến thiên chưa hiểu rõ. Chạy bằng file và công cụ local; không Computer Use, không API key âm thanh. Audio không được upload bởi harness; lời nhắn và kết quả tool vẫn đi qua chat Codex như bình thường.
+[Lệnh và schema plan](skills/capcut-cinematic-cards/references/tool.md) · [Nguyên tắc chọn card và style](skills/capcut-cinematic-cards/references/editing.md)
 
-v0.3.1 có kiểm tra cú pháp/đóng gói và cài plugin local; không thực hiện vòng 300 nguồn hoặc nghe/kiểm tra lại phim thật theo yêu cầu chủ dự án. Các kết quả kiểm thử v0.2.0 trong [lịch sử](docs/verification.md) không phải bằng chứng cho engine mới. Audio dựng từ nguồn không chứng minh playback/export native CapCut; báo cáo giữ `editor_render_verified: false`. Không khôi phục được tiếng đã méo trong file gốc. macOS là môi trường phát triển; các hệ điều hành khác chưa được xác minh.
-
-[Kiến trúc phát triển](docs/harness-development.md) · [Quyết định](docs/review-and-decisions.md) · [Bản card độc lập cũ v0.1.1](https://github.com/Ductoii/capcut-cinematic-cards/tree/v0.1.1)
+Thư mục cài có thể đổi bằng biến `CAPCUT_CARDS_SKILLS_DIR`. Installer giữ nguyên skill không thuộc quyền quản lý của nó. Bản sao skill cũ ở `capcut-cards-install-backups` bên cạnh thư mục `skills`. Muốn gỡ, bảo Codex gỡ riêng skill này; project và backup phim không nằm trong thư mục cài.

@@ -1,73 +1,67 @@
-# CapCut Harness
+# CapCut Cinematic Cards
 
-**One local Codex plugin for cinematic cards, per-source dialogue leveling and freeform requests sent to the same chat.**
+**Audio is a separate tool:** [CapCut Audio](https://github.com/Ductoii/capcut-audio) runs local algorithms without Codex. This repository contains only the standalone cards skill.
 
-[Tiếng Việt](README.md) · [v0.3.1](https://github.com/Ductoii/capcut-cinematic-cards/releases/tag/v0.3.1) · [MIT](LICENSE)
+
+[Tiếng Việt / full guide](README.md)
+
+A local Codex skill for necessary **time cards, location cards and first-appearance character introductions**, with typography adapted to each film. Separate editable text tracks preserve existing compound clips, audio, timing and transitions. No computer use, MCP server or separate API key.
 
 ## One-line install
 
-Requires Codex desktop, Python 3.10–3.13 and FFmpeg/ffprobe:
+macOS/Linux, Python 3.10+:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.3.1/install-harness.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.1/install.py | python3
 ```
 
-Alternatively, give this repository to local Codex on the computer containing the project and ask it to install v0.3.1, prepare dependencies and open the workspace without Computer Use. No manual JSON editing.
+Windows PowerShell, Python 3.10+:
 
-The installer creates a private runtime and registers a local plugin/MCP with the native Codex CLI. Cards and audio share `capcut-harness`. Managed previous installations are backed up. An old service is stopped only when idle and its process belongs to this installation. CapCut is never terminated.
+```powershell
+(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.1/install.py).Content | py -3 -
+```
 
-## Open in Codex
+This downloads and executes the public [installer](install.py), pinned to version 0.1.1. It installs at `~/.agents/skills/capcut-cinematic-cards`. Restart Codex if discovery has not refreshed. Reinstalling backs up a previous managed install; unmanaged skills are preserved. Set `CAPCUT_CARDS_SKILLS_DIR` for another skills directory. Skill backups are stored in the sibling `capcut-cards-install-backups` folder.
 
-Start a **fresh local Codex chat** after installation:
+You can also give this repository URL to local Codex and ask it to install the skill and prepare dependencies. No Git clone or manual JSON editing is required.
+
+## Tell Codex
 
 ```text
-$capcut-harness
-Open the workspace for project 1027.
+$capcut-cinematic-cards
+Add only necessary time/location cards and introduce principal characters with
+their names and short established roles at
+their first confirmed appearance in project "My Film". Match the film's style.
+Prefer existing black fades, protect important shots, reactions and dialogue,
+and preserve my compound clip. No computer use.
+The screenplay and character references are at: [local path or attachment].
 ```
 
-The host must support MCP Apps and `ui/message`. The panel includes projects, cards, dialogue leveling, A/B, Apply/Undo and a natural-language request box. Requests go to **the chat hosting that panel**, using its existing Codex tools, without starting a second model. Any host confirmation remains under Codex control.
+Codex discovers the project, reads the screenplay/captions, reviews source frames and audio, chooses safe placements, fills the plan, stages backups, applies and verifies. Save and close CapCut before applying: the helper refuses a running editor and never kills it. Analysis/staging can finish while the editor is open.
 
-Examples: “Add only necessary time/location cards at existing black fades”; “Introduce principal characters with verified names and short roles at their first appearance, matching this film”; “Make dialogue consistent between sources while preserving delivery and compound clips.”
+Version **0.1.1** defaults to **name + role**: a concise established occupation or relationship, never a villain label or a future reveal. Readable native sizes 6.2/3.8 and lower-third positions -0.64/-0.77 apply to character cards, with film-specific overrides. Time/location defaults are unchanged. Names-only requests, unknown roles or spoiler-sensitive roles require a documented omission reason; the assistant must never invent a role.
 
-Durable requests show saved, sent, acknowledged, working and terminal states. Unconfirmed delivery is marked uncertain and never automatically resent. Other requests are interpreted by Codex according to its available tools; the box has no finite command grammar.
+Character identities require evidence and a review of earlier scenes. Unknown identities, mystery reveals and unsuitable entrance scenes are omitted or deferred. This is editorial judgment, not guaranteed automated face recognition.
 
-The standalone HTTP UI (`~/.local/bin/capcut-harness`) supports local jobs/listening but has no chat bridge. Open the skill's MCP panel for freeform messages. If tools are missing, ask Codex to repair native registration using `install-harness.py --register-only`. Panel rendering/message support depends on the host version; installation alone does not prove that the host rendered or delivered a message.
+Five starting themes cover heritage drama, modern thriller, documentary, intimate romance and noir. Codex chooses an installed font and can adjust color, size, spacing, position and opacity fades. No fonts are bundled. Animated tracking, moving titles, glitches, freeze frames and effect packs are outside this version. A 1.5s fade is never stretched into black just to hold a 3.4s card.
 
-## Projects and screenplays
+## Requirements and boundaries
 
-The catalog reads CapCut stores/indexes, custom save paths in settings and OS-indexed project files. **Quét lại project** refreshes the list. Encrypted/empty/unsupported projects remain visible and show an editing reason when selected. Finding projects outside stores depends on filesystem access and OS indexing; hidden/unmounted locations cannot be guaranteed.
+- Local Codex with filesystem/terminal access, Python 3.10+, FFmpeg and ffprobe on PATH, accessible source media and an installed font supporting the film's language. Ask Codex to prepare missing dependencies.
+- Unencrypted CapCut JSON draft schema **360000** only. Other schemas stop safely. Source mapping supports nested compounds, trims and constant speed; reverse, loops, speed curves and external compounds need separate evidence or omission.
+- Source frames are **uncomposited**, and audio outputs are separate stems with global offsets. Codex must inspect crop, transforms, effects, captions and overlays too. Successful file verification is not CapCut rendering/playback verification.
+- File/media workflow and 30 tests verified locally on macOS. The file tests are portable but have not been run on Windows/Linux; CI is not enabled. Native CapCut rendering there has not been verified. Linux can inspect/edit copied compatible draft files, not run a bundled CapCut editor.
+- Exact ownership hashes prevent replacing modified cards. CapCut normalization can trigger this guard; inspect and preserve changes instead of forcing an old plan.
+- Backups live outside the project. Guarded restore refuses to overwrite later unfamiliar edits. Multi-file apply is not crash-atomic; the saved transaction supports recovery from known partial writes.
 
-In **Cinematic cards**, paste a screenplay or choose a UTF-8 `.txt`/`.md` file up to 512 KB. **Gửi kịch bản làm timecard** saves it for the selected project and sends a same-chat request linked to that exact revision. **Lưu kịch bản** saves without requesting cards. Later project requests include the saved screenplay automatically. Scripts stay outside the CapCut draft; editing a script later cannot alter an already-submitted revision. Codex aligns story context with actual timeline scenes/dialogue, never paragraph positions as timestamps.
+The skill has no media-upload service. Projects, frames, audio, fonts and backups stay in local files; material supplied to the Codex session is still handled according to that session's data settings.
 
-## Online-film dialogue preset
+Ask Codex to restore a previous card run or remove only this skill when needed. Neither action requires you to edit draft files. Project backups are separate from the installed skill.
 
-Defaults: **−16 LUFS speech anchor, −1.5 dBTP ceiling**, stereo 48 kHz PCM24. This is an online-film starting preset, not a universal film/MV/YouTube certification. A yellow peak meter alone cannot compare perceived loudness across sources.
+## Development
 
-1. Decode each audible source with supported trim, constant speed, volume and fades.
-2. Detect speech per source, optionally conditioning only detector input for very quiet files.
-3. Anchor each take with a duration-weighted median loudness and small phrase trims, preserving delivery.
-4. Apply gentle RMS compression, 2:1, 15 ms attack/180 ms release, with bounded makeup.
-5. Protect source transients, sum the timeline and limit master peaks. Sources without detected speech retain their level and appear in coverage reporting.
+```bash
+python3 -m unittest discover -s tests -v
+```
 
-Default maximum boost is 48 dB, allowing very quiet material to be lifted while also potentially exposing noise. Separate music/SFX sources do not follow another source's dialogue gain. Background or singing baked into the speech file follows that file; this is not stem separation or speaker identification.
-
-**Level dialogue** prepares a listening job without changing the project. A/B, settings and interval exclusions are available. Excluded intervals restore mapped source audio before summation; the final limiter still applies. Reports expose source coverage and exceptions. No extra full-film validation/listening cycle is run beyond requested work.
-
-Save and close CapCut before Apply. One external root audio master is added; audible original root participants are muted to avoid duplication, while picture, compound structures and cards are preserved. Undo uses exact backups and refuses later foreign edits. Keep `~/.local/share/capcut-harness` for jobs/listening files/backups; long films can use several GB.
-
-## Cinematic cards
-
-- Add time/location cards only when orientation needs them. Prefer existing black fades long enough to read; never stretch a transition to fit text.
-- Introduce characters at confirmed first appearances with established names and short roles, without invented identities or spoilers.
-- Adapt installed fonts, size, spacing, placement, color and opacity fades to the film.
-- Add editable native text on separate root tracks. Preserve compound edits, dialogue, important shots and original transitions. Complex moving titles/glitch effect packs are outside this version.
-
-Codex uses screenplay/caption/frame evidence; this is not guaranteed automatic face recognition. [Card guide](skills/capcut-harness/references/cards.md) · [Plan/commands](skills/capcut-harness/references/tool.md).
-
-## Scope and status
-
-Readable unencrypted local JSON schema `360000`; unknown routing, audible effects and variable speed are refused. Local file tools only, no Computer Use or audio API key. Harness does not upload audio; chat messages/tool context use Codex normally.
-
-v0.3.1 receives syntax/package checks and local plugin installation. The owner opted out of a 300-source or real-film recheck/listening cycle. Historical v0.2.0 [test results](docs/verification.md) do not validate the new engine. Reconstructed source audio is not proof of native CapCut playback/export; reports retain `editor_render_verified: false`. Distortion already in a source cannot be repaired by leveling. macOS is the development environment; other operating systems remain unverified.
-
-[Developer architecture](docs/harness-development.md) · [Decisions](docs/review-and-decisions.md) · [Legacy standalone cards v0.1.1](https://github.com/Ductoii/capcut-cinematic-cards/tree/v0.1.1)
+Tests cover original-track preservation, mirror synchronization, speech protection, character evidence, styling, stale sources, busy editor, owned updates, guarded rollback, source mapping and installer safety. [Agent workflow](skills/capcut-cinematic-cards/SKILL.md) · [Commands/plan](skills/capcut-cinematic-cards/references/tool.md) · [Editorial guide](skills/capcut-cinematic-cards/references/editing.md) · [MIT license](LICENSE)
