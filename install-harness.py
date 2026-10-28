@@ -169,8 +169,8 @@ def register_plugin(result,root):
     if plugin.exists():
         saved=root/'backups'/('plugin-'+uuid.uuid4().hex);saved.parent.mkdir(parents=True,exist_ok=True);plugin.rename(saved)
     (plugin/'.codex-plugin').mkdir(parents=True)
-    shutil.copytree(app/'skills/capcut-harness',plugin/'skills/capcut-harness')
-    descriptor=dict(name='capcut-harness',version=VERSION[1:],description='Local CapCut panel in the current chat, cinematic cards and source-aware film dialogue.',skills='./skills/',mcpServers='./.mcp.json')
+    # The primary skill already lives in .agents/skills; avoid discovering it twice.
+    descriptor=dict(name='capcut-harness',version=VERSION[1:],description='Local CapCut panel in the current chat, cinematic cards and source-aware film dialogue.',mcpServers='./.mcp.json')
     (plugin/'.codex-plugin/plugin.json').write_text(json.dumps(descriptor,indent=2))
     transport=dict(command=str(python),args=['-m','capcut_harness.mcp'],cwd=str(app),env=dict(PYTHONPATH=str(app)))
     (plugin/'.mcp.json').write_text(json.dumps(dict(mcpServers={'capcut-harness':transport}),indent=2))
