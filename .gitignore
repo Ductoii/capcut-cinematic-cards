@@ -3,3 +3,9 @@ __pycache__/
 *.py[cod]
 .venv/
 .DS_Store
+
+.taste-skill/after/
+.taste-skill/final/
+*.egg-info/
+build/
+dist/

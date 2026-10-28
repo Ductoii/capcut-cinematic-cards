@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="vi" data-theme="dark">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CapCut Harness · Cân âm thoại</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath stroke='white' fill='none' stroke-width='2' d='M3 16h5l3-9 5 18 5-18 3 9h5'/%3E%3C/svg%3E">
+<link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/app.css"><script src="/charts.js" defer></script><script src="/app.js" defer></script></head>
+<body>
+<aside class="sidebar" id="navigation"><a class="brand" href="#dialogue"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M2 16h6l3-9 5 18 5-18 3 9h6"/></svg><span>CapCut Harness</span></a>
+<p class="nav-caption">Phòng dựng local</p><nav aria-label="Công cụ"><a href="#dialogue" data-view="dialogue" aria-current="page">Cân âm thoại</a><a href="#jobs" data-view="jobs">Công việc</a><a href="#cards" data-view="cards">Cinematic cards</a></nav>
+<div class="sidebar-foot"><span id="version">Local workspace</span><span>Media ở lại trên máy</span></div></aside>
+<div class="shell"><header class="topbar"><button class="menu-button" id="menu" aria-label="Mở điều hướng" aria-expanded="false">Menu</button><span class="scope-label">Project</span><label class="visually-hidden" for="project-select">Chọn project</label><select id="project-select"><option value="">Đang tìm project…</option></select><button class="text-button" id="add-project">Thêm project</button><span id="editor-state" class="editor-state">Đang kiểm tra</span></header>
+<main>
+<div id="connection-error" class="notice error" role="alert" hidden></div><div id="message" class="notice" role="status" hidden></div>
+<section id="dialogue-view">
+<div class="title-row"><div><h1>Cân âm thoại</h1><p id="project-info">Chọn project để kiểm tra âm lượng thoại.</p></div><button class="primary" id="analyze" disabled>Cân âm thoại</button></div>
+<div class="workspace">
+<div class="main-column">
+<section class="panel timeline-panel" aria-labelledby="timeline-title"><div class="panel-heading"><h2 id="timeline-title">Thoại xuyên suốt phim</h2><span id="duration" class="num">—</span></div>
+<div class="metrics"><div><span>Độ chênh P10–P90</span><strong class="num lead" id="spread">—</strong><small id="spread-before">Chưa có phép đo</small></div><div><span>Trung vị thoại</span><strong class="num" id="median">—</strong><small>LUFS · sau xử lý</small></div><div><span>Peak thực</span><strong class="num" id="peak">—</strong><small>dBTP · toàn bản mix</small></div></div>
+<div class="chart-heading"><p id="finding">Phân tích để thấy câu nào lớn, câu nào nhỏ.</p><div class="legend" id="chart-legend" hidden><span><i class="before-line"></i>Trước</span><span><i class="after-line"></i>Sau</span></div></div>
+<div id="speech-chart" class="speech-chart"><div class="empty-chart">Chưa có dữ liệu thoại</div></div>
+<div class="panel-note" id="coverage">Không thay đổi project khi phân tích.</div></section>
+<section class="panel playback-panel" aria-labelledby="listen-title"><div class="panel-heading"><h2 id="listen-title">Nghe đối chiếu</h2><div class="switch" role="group" aria-label="Phiên bản âm thanh"><button id="listen-before" aria-pressed="true" disabled>Bản gốc</button><button id="listen-after" aria-pressed="false" disabled>Sau xử lý</button></div></div><audio id="audio-player" controls preload="metadata" aria-label="Nghe âm thanh project"></audio><p class="panel-note">Chuyển bản giữ nguyên vị trí nghe. Chọn một khoảng thoại để nghe ngay.</p></section>
+<section class="panel intervals-panel" aria-labelledby="interval-title"><div class="panel-heading"><h2 id="interval-title">Khoảng thoại</h2><button id="show-all" class="text-button" disabled>Xem tất cả</button></div>
+<div class="table-scroll"><table><thead><tr><th>Khoảng nghe</th><th class="num">Trước</th><th class="num">Sau</th><th class="num">Gain</th><th class="check-cell">Giữ</th></tr></thead><tbody id="interval-rows"><tr><td colspan="5" class="empty-row">Chưa có khoảng thoại. Bắt đầu bằng Cân âm thoại.</td></tr></tbody></table></div>
+<p id="interval-note" class="panel-note">Nhận diện giọng nói tự động; bỏ chọn khoảng bị nhận nhầm rồi cập nhật bản nghe.</p></section>
+</div>
+<aside class="control-column" aria-label="Thiết lập và áp dụng">
+<section class="panel settings-panel"><h2>Mức thoại</h2><label for="target">Mục tiêu <span>LUFS</span></label><select id="target"><option value="-24">−24 · nhẹ</option><option value="-20">−20 · tự nhiên</option><option value="-18" selected>−18 · cân bằng</option><option value="-16">−16 · rõ hơn</option><option value="-14">−14 · lớn</option></select>
+<div class="field-pair"><div><label for="boost">Tăng tối đa <span>dB</span></label><input type="number" id="boost" min="0" max="24" value="12" step="1"></div><div><label for="ceiling">Trần peak <span>dBTP</span></label><input type="number" id="ceiling" min="-6" max="-0.5" value="-1.5" step="0.1"></div></div>
+<p class="panel-note">Cân theo khoảng thoại, giữ biến thiên trong câu. Nhạc dính vào giọng sẽ đổi mức cùng đoạn đó.</p><button id="rerender" class="secondary full" hidden>Cập nhật bản nghe</button></section>
+<section class="panel job-panel"><div class="panel-heading"><h2>Bản đang làm</h2><button id="cancel" class="text-button" hidden>Hủy</button></div><strong id="job-state" class="job-state">Chưa bắt đầu</strong><p id="job-progress">Bản nghe và phép đo sẽ được lưu theo từng công việc.</p><progress id="job-meter" max="1" value="0" hidden></progress><p id="job-error" class="job-error" role="status" hidden></p>
+<div class="apply-actions"><button id="apply" class="secondary full" disabled>Áp dụng vào project</button><button id="retry" class="secondary full" hidden>Thử lại</button><button id="undo" class="text-button full" hidden>Hoàn tác</button></div><p id="apply-note" class="panel-note">Apply thêm một track audio riêng, tắt âm gốc để tránh phát trùng. Lưu và đóng CapCut trước khi áp dụng.</p></section>
+<div class="integrity"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><p>Giữ nguyên hình, clip ghép và card.<br><span>Backup và kiểm tra trước mỗi lần ghi.</span></p></div>
+</aside></div></section>
+<section id="jobs-view" hidden><div class="title-row"><div><h1>Công việc</h1><p>Các bản phân tích, bản nghe và lần áp dụng đã lưu.</p></div><button id="refresh-jobs" class="secondary">Làm mới</button></div><div id="job-list" class="panel job-list"></div></section>
+<section id="cards-view" hidden><div class="title-row"><div><h1>Cinematic cards</h1><p>Text hiện có trong project đang chọn.</p></div></div><div class="panel"><p class="panel-note">Time, location và giới thiệu nhân vật vẫn dùng skill <code>$capcut-cinematic-cards</code> để rà cảnh và thoại trước khi đặt chữ.</p><div id="card-list"></div></div></section>
+<form id="command-form" class="command-form"><label for="command-input">Gửi lệnh cho harness</label><div><input id="command-input" autocomplete="off" placeholder="Cân âm thoại 1027"><button class="secondary" type="submit">Gửi lệnh</button></div><small>Hỗ trợ: phân tích · cân âm thoại · áp dụng &lt;job&gt; · hoàn tác &lt;job&gt;</small></form>
+</main></div>
+<dialog id="project-dialog"><form id="project-form"><h2>Thêm project CapCut</h2><label for="project-path">Thư mục project trên máy</label><input id="project-path" required autocomplete="off" placeholder="Đường dẫn thư mục chứa draft_info.json"><div class="dialog-actions"><button type="button" class="text-button" id="close-dialog">Đóng</button><button class="primary" type="submit">Thêm project</button></div></form></dialog>
+</body></html>
