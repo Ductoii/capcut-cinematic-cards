@@ -45,12 +45,22 @@ Character identities require evidence and a review of earlier scenes. Unknown id
 
 Five starting themes cover heritage drama, modern thriller, documentary, intimate romance and noir. Codex chooses an installed font and can adjust color, size, spacing, position and opacity fades. No fonts are bundled. Animated tracking, moving titles, glitches, freeze frames and effect packs are outside this version. A 1.5s fade is never stretched into black just to hold a 3.4s card.
 
+## In development on main (not in the v0.1.1 installer)
+
+- Probe exact last-frame boundaries and sub-frame video/audio tails with real sample timestamps and warnings; reject longer bad trims. Use compatible JPEG pixel format.
+- Restyle saved owned titles without resetting wording, positions, timing, keyframes, effects or CapCut-normalized defaults. Changed hashes require a fresh recorded ownership review, never a pre-emptive state rewrite.
+- Account for every requested principal in `character_review`, including shared pair cards and explicit omission reasons. Anchor scene cards to original fades and bridge short fades without extending black.
+- Optionally reuse a reviewed existing local native entry animation on both text lines. No guessed/downloaded effects. An `ending` card uses an existing safe final hold.
+- Explain Save and Quit (Cmd+Q on macOS) when closing a window leaves CapCut running.
+
+See the [command/plan reference](skills/capcut-cinematic-cards/references/tool.md). Structural checks still do not verify native CapCut playback/rendering.
+
 ## Requirements and boundaries
 
 - Local Codex with filesystem/terminal access, Python 3.10+, FFmpeg and ffprobe on PATH, accessible source media and an installed font supporting the film's language. Ask Codex to prepare missing dependencies.
 - Unencrypted CapCut JSON draft schema **360000** only. Other schemas stop safely. Source mapping supports nested compounds, trims and constant speed; reverse, loops, speed curves and external compounds need separate evidence or omission.
 - Source frames are **uncomposited**, and audio outputs are separate stems with global offsets. Codex must inspect crop, transforms, effects, captions and overlays too. Successful file verification is not CapCut rendering/playback verification.
-- File/media workflow and 30 tests verified locally on macOS. The file tests are portable but have not been run on Windows/Linux; CI is not enabled. Native CapCut rendering there has not been verified. Linux can inspect/edit copied compatible draft files, not run a bundled CapCut editor.
+- File/media tests verified locally on macOS. The file tests are portable but have not been run on Windows/Linux; CI is not enabled. Native CapCut rendering there has not been verified. Linux can inspect/edit copied compatible draft files, not run a bundled CapCut editor.
 - Exact ownership hashes prevent replacing modified cards. CapCut normalization can trigger this guard; inspect and preserve changes instead of forcing an old plan.
 - Backups live outside the project. Guarded restore refuses to overwrite later unfamiliar edits. Multi-file apply is not crash-atomic; the saved transaction supports recovery from known partial writes.
 

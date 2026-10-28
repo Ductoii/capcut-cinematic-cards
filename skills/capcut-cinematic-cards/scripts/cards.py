@@ -104,7 +104,87 @@ def inspect(project):
     return dict(project=str(project), active_timeline=str(active), project_sha256=signature, schema=data['version'],
                 duration=data['duration']/1e6, fps=data['fps'], canvas=data.get('canvas_config'), mirrors=paths,
                 tracks=[{'id': t.get('id'), 'name': t.get('name'), 'type': t['type'], 'segments': len(t.get('segments', []))} for t in data['tracks']],
-                **flatten(data, project))
+                ownership=ownership_report(data, read(project/STATE) if (project/STATE).exists() else None,
+                                           signature, digest(project/STATE)), **flatten(data, project))
+
+
+def ownership_report(data, state, signature, state_hash):
+    """A review snapshot, never permission to silently accept edited titles."""
+    report = dict(project_sha256=signature, state_sha256=state_hash,
+                  tracks={}, materials={}, changed={}, missing={})
+    if not state:
+        report['status'] = 'unmanaged'
+        return report
+    require(state.get('project_id') == data.get('id') and state.get('version') == 1,
+            'Incompatible card ownership state')
+    for key, values in [('tracks', data['tracks']), ('materials', data['materials'].get('texts', []))]:
+        found = [v for v in values if v.get('id') in state[key]]
+        require(len({v['id'] for v in found}) == len(found), 'Duplicate owned ID; review manually')
+        report[key] = {v['id']: object_hash(v) for v in found}
+        report['missing'][key] = sorted(set(state[key])-set(report[key]))
+        report['changed'][key] = sorted(i for i, h in report[key].items() if h != state[key][i])
+    report['status'] = ('missing' if any(report['missing'].values()) else
+                        'changed' if any(report['changed'].values()) else 'exact')
+    return report
+
+
+def reviewed_state(data, state, signature, state_hash, plan):
+    require(state is not None, 'No owned titles to restyle; use stage for initial cards')
+    report = ownership_report(data, state, signature, state_hash)
+    require(report['status'] != 'missing', 'Owned cards were removed; preserve those edits and review separately')
+    segments = [(s.get('material_id'), s.get('id')) for t in data['tracks'] if t['id'] in state['tracks']
+                for s in t.get('segments', [])]
+    expected = {(ident, identity(ident, 'segment')) for ident in state['materials']}
+    require(len(segments) == len(expected) and set(segments) == expected,
+            'Owned track segment membership changed; do not reclaim removed or user-added segments')
+    if report['status'] == 'changed':
+        review = plan.get('ownership_review', {})
+        require(isinstance(review, dict) and isinstance(review.get('findings'), str) and
+                review['findings'].strip(), 'Owned titles changed; compare the previous stage and record ownership_review findings')
+        require(all(review.get(k) == report[k] for k in
+                    ('project_sha256', 'state_sha256', 'tracks', 'materials')),
+                'Ownership review is stale or incomplete; inspect and review again')
+    updated = copy.deepcopy(state)
+    updated.update(tracks=report['tracks'], materials=report['materials'])
+    if any(m.get('id') not in state['materials'] for m in data['materials'].get('texts', [])):
+        # A user-added title now owns the collection too; never remove that collection.
+        updated['texts_container_created'] = False
+    return updated
+
+
+def validate_character_review(plan, cards):
+    review = plan.get('character_review')
+    if review is None:
+        require(not plan.get('introduce_characters'), 'List every principal in character_review before staging introductions')
+        return
+    require(isinstance(review, list) and bool(review), 'character_review must list the principal cast')
+    names, introduced = set(), set()
+    by_id = {c['id']: c for c in cards}
+    for entry in review:
+        require(isinstance(entry, dict) and isinstance(entry.get('name'), str) and entry['name'].strip(),
+                'Each principal needs a confirmed name')
+        ident = entry.get('id')
+        require(isinstance(ident, str) and ident and ident not in names, 'Each principal needs a unique ID')
+        names.add(ident)
+        if entry.get('status') == 'introduced':
+            card = by_id.get(entry.get('card_id'), {})
+            require(card.get('kind') == 'character' and ident in card.get('characters', []),
+                    'Introduced principal must link to a character card listing their ID')
+            introduced.add(ident)
+        else:
+            require(entry.get('status') == 'omitted' and isinstance(entry.get('reason'), str) and
+                    entry['reason'].strip(), 'Omitted principal needs a specific reason, not a silent omission')
+    linked_ids = []
+    for card in cards:
+        if card.get('kind') != 'character':
+            continue
+        members = card.get('characters')
+        require(isinstance(members, list) and members and all(isinstance(i, str) and i for i in members),
+                'Each character card needs a list of principal IDs')
+        linked_ids.extend(members)
+    require(len(linked_ids) == len(set(linked_ids)), 'Introduce each principal once; use a shared pair card when appropriate')
+    linked = set(linked_ids)
+    require(linked == introduced, 'Character card cast IDs must match introduced principals in character_review')
 
 
 def number(value, name):
@@ -127,7 +207,7 @@ def validate_plan(plan, data, signature, font):
         start, end = number(interval['start'], 'protected start'), number(interval['end'], 'protected end')
         require(0 <= start < end <= data['duration']/1e6 and interval.get('reason'), 'Invalid protected range')
     for card in cards:
-        require(card.get('kind', 'time-location') in ('time', 'location', 'time-location', 'character'), 'Unknown card kind')
+        require(card.get('kind', 'time-location') in ('time', 'location', 'time-location', 'character', 'ending'), 'Unknown card kind')
         selected_style = {**plan.get('style', {}), **card.get('style', {})}
         defaults = {}
         if card.get('kind') == 'character':
@@ -172,15 +252,140 @@ def validate_plan(plan, data, signature, font):
             evidence[str(path)] = digest(path)
     cards.sort(key=lambda card: card['_start_us'])
     require(all(a['_end_us'] <= b['_start_us'] for a, b in zip(cards, cards[1:])), 'Cards overlap one another')
+    validate_character_review(plan, cards)
     return cards, evidence
 
 
-def stage(project, plan, out, font):
+def native_fade(plan, data, evidence):
+    option = plan.get('native_fade_in')
+    if option is None:
+        return None
+    require(isinstance(option, dict) and isinstance(option.get('review'), str) and option['review'].strip(),
+            'Native fade requires a review of an existing local entry animation')
+    ident = option.get('material_id')
+    material = next((m for m in data['materials'].get('material_animations', []) if m.get('id') == ident), None)
+    require(material and len(material.get('animations', [])) == 1 and
+            material['animations'][0].get('type') == 'in', 'Reuse one existing native entry animation; never invent effect IDs')
+    source = next((s for t in data['tracks'] if t.get('type') == 'text' for s in t.get('segments', [])
+                   if s.get('id') == option.get('source_segment_id')), None)
+    require(source and ident in source.get('extra_material_refs', []), 'Native fade must already belong to the reviewed source text segment')
+    root = Path(material['animations'][0]['path']).expanduser().resolve(strict=True)
+    require(root.is_dir() and isinstance(option.get('files'), list) and option['files'], 'List reviewed native fade resource files')
+    for name in option['files']:
+        path = Path(name).expanduser().resolve(strict=True)
+        require(path.is_file() and path.is_relative_to(root), 'Fade evidence must stay inside its existing local resource')
+        evidence[str(path)] = digest(path)
+    return ident
+
+
+def attach_fade(segment, ident, data):
+    if ident is None:
+        return
+    animations = {m['id'] for m in data['materials'].get('material_animations', [])}
+    refs = segment.setdefault('extra_material_refs', [])
+    require(not (set(refs) & (animations-{ident})), 'Preserve the different existing text animation; review it separately')
+    if ident not in refs:
+        refs.append(ident)
+
+
+def effective_restyle_plan(plan, data, state):
+    """Use current text/timing/layout, so a saved manual edit is not reverted."""
+    result = copy.deepcopy(plan)
+    materials = {m['id']: m for m in data['materials'].get('texts', []) if m['id'] in state['materials']}
+    segments = {s['material_id']: s for t in data['tracks'] if t['id'] in state['tracks'] for s in t['segments']}
+    for card in result['cards']:
+        main_id = identity(data['id'], card['id']+'/title')
+        role_id = identity(data['id'], card['id']+'/detail')
+        if main_id not in materials:
+            continue
+        segment = segments[main_id]
+        timerange = segment['target_timerange']
+        card.update(start=timerange['start']/1e6, duration=timerange['duration']/1e6,
+                    **segment['clip']['transform'])
+        if not card.get('replace_text', False):
+            card['title'] = json.loads(materials[main_id]['content'])['text']
+            card['detail'] = json.loads(materials[role_id]['content'])['text'] if role_id in materials else card.get('detail', '')
+        if role_id in materials:
+            require(segments[role_id]['target_timerange'] == timerange,
+                    'Title and role have different saved timing; review separately')
+    return result
+
+
+def restyle_result(original, state, cards, font, fade):
+    result = copy.deepcopy(original)
+    materials = {m['id']: m for m in result['materials']['texts'] if m['id'] in state['materials']}
+    tracks = {t['id']: t for t in result['tracks'] if t['id'] in state['tracks']}
+    segments = {s['material_id']: s for t in tracks.values() for s in t['segments']}
+    all_ids = {m.get('id') for values in result['materials'].values() if isinstance(values, list) for m in values if isinstance(m, dict)}
+    for detail in (False, True):
+        track_id = identity(original['id'], 'track/detail' if detail else 'track/main')
+        for card in cards:
+            if detail and not card.get('detail'):
+                continue
+            generated, segment = make_text(original['id'], card, detail, font, float(original['fps']))
+            ident = generated['id']
+            if ident in materials:
+                material = materials[ident]
+                content, wanted = json.loads(material['content']), json.loads(generated['content'])
+                if content['text'] != wanted['text']:
+                    require(card.get('replace_text') is True and len(content['styles']) == 1,
+                            'Replacing rich text needs separate review')
+                    content['text'] = wanted['text']
+                    content['styles'][0]['range'] = [0, len(wanted['text'])]
+                    material['name'] = generated['name']
+                for style in content['styles']:
+                    for key in ('fill', 'font', 'size'):
+                        style[key] = copy.deepcopy(wanted['styles'][0][key])
+                material['content'] = json.dumps(content, ensure_ascii=False, separators=(',', ':'))
+                for key in ('font_path', 'font_name', 'font_title', 'font_size', 'font_id', 'font_resource_id',
+                            'font_url', 'fonts', 'text_color', 'letter_spacing'):
+                    material[key] = generated[key]
+                for key in ('font_team_id', 'font_third_resource_id', 'font_category_id', 'font_category_name'):
+                    if key in material:
+                        material[key] = ''
+                if 'font_source_platform' in material:
+                    material['font_source_platform'] = 0
+                # Keep all saved keyframes, transforms, ranges, defaults, effects and other rich-text fields.
+                segment = segments[ident]
+            else:
+                require(ident not in all_ids, 'New restyle material ID collides with user data')
+                if not detail:
+                    existing_main = tracks.get(track_id, {}).get('segments', [])
+                    left, right = segment['target_timerange']['start'], segment['target_timerange']['start']+segment['target_timerange']['duration']
+                    require(all(right <= s['target_timerange']['start'] or left >=
+                                s['target_timerange']['start']+s['target_timerange']['duration'] for s in existing_main),
+                            'New character/title overlaps an existing owned card omitted from the plan')
+                all_ids.add(ident)
+                if track_id not in tracks:
+                    require(not any(t['id'] == track_id for t in result['tracks']), 'Restyle track ID collision')
+                    track = dict(id=track_id, type='text', name='Cinematic Cards · Detail' if detail else 'Cinematic Cards · Main',
+                                 flag=0, attribute=0, is_default_name=False, segments=[])
+                    result['tracks'].append(track); tracks[track_id] = track
+                segment['track_render_index'] = result['tracks'].index(tracks[track_id])
+                entries = tracks[track_id]['segments']
+                index = next((i for i, s in enumerate(entries) if s['target_timerange']['start'] >
+                              segment['target_timerange']['start']), len(entries))
+                entries.insert(index, segment)
+                result['materials']['texts'].append(generated); materials[ident] = generated
+            attach_fade(segment, fade, original)
+    updated = copy.deepcopy(state)
+    updated.update(tracks={i: object_hash(t) for i, t in tracks.items()},
+                   materials={i: object_hash(m) for i, m in materials.items()})
+    return result, updated
+
+
+def stage(project, plan, out, font, preserve_owned=False):
     project, active, original, paths, signature = load(project)
     out, font = Path(out).expanduser().resolve(), Path(font).expanduser().resolve()
     require(not out.is_relative_to(project), 'Stage/backup folder must be outside the CapCut project')
     require(not out.exists(), 'Stage folder already exists; use a fresh run directory')
+    old_state = read(project/STATE) if (project/STATE).exists() else None
+    saved_state = old_state
+    if preserve_owned:
+        saved_state = reviewed_state(original, old_state, signature, digest(project/STATE), plan)
+        plan = effective_restyle_plan(plan, original, saved_state)
     cards, evidence = validate_plan(plan, original, signature, font)
+    fade = native_fade(plan, original, evidence)
     from media import flatten
     for source in flatten(original, project)['sources']:
         if any(source['start'] < c['evidence']['end'] and source['end'] > c['evidence']['start'] for c in cards):
@@ -192,8 +397,11 @@ def stage(project, plan, out, font):
             path = Path(name).expanduser().resolve(strict=True)
             require(path.is_file(), 'Additional evidence must be a local file')
             evidence[str(path)] = digest(path)
-    old_state = read(project/STATE) if (project/STATE).exists() else None
-    base = strip_owned(original, old_state)
+    base = strip_owned(original, saved_state)
+    if preserve_owned:
+        result, state = restyle_result(original, saved_state, cards, font, fade)
+        require(strip_owned(result, state) == base, 'Restyle changed unowned project data')
+        return write_stage(project, active, original, paths, signature, plan, out, result, state, base, evidence)
     result = copy.deepcopy(base)
     result['materials'].setdefault('texts', [])
     new_tracks, new_materials = [], []
@@ -204,6 +412,7 @@ def stage(project, plan, out, font):
             if detail and not card.get('detail'):
                 continue
             material, segment = make_text(original.get('id', 'project'), card, detail, font, float(original['fps']))
+            attach_fade(segment, fade, original)
             require(material['id'] not in all_ids, 'Generated material id collides with existing user material')
             all_ids.add(material['id'])
             segment['track_render_index'] = len(result['tracks'])
@@ -220,6 +429,10 @@ def stage(project, plan, out, font):
     state = dict(version=1, project_id=original.get('id'), texts_container_created='texts' not in base['materials'], tracks={t['id']: object_hash(t) for t in new_tracks},
                  materials={m['id']: object_hash(m) for m in new_materials})
     require(strip_owned(result, state) == base, 'Integrity check: original project changed while building titles')
+    return write_stage(project, active, original, paths, signature, plan, out, result, state, base, evidence)
+
+
+def write_stage(project, active, original, paths, signature, plan, out, result, state, base, evidence):
     out.mkdir(parents=True)
     before = {}
     for relative in paths + [STATE]:
@@ -308,7 +521,8 @@ def verify(directory):
 
 def apply(directory):
     directory, project, meta = transaction(directory)
-    require(not editor_running(), 'CapCut is running: stage is ready; save and close it before apply')
+    require(not editor_running(), 'CapCut is running: stage is ready; save and quit the application before apply '
+            '(closing its window may leave it running; on macOS use Cmd+Q)')
     for name, expected in meta['evidence'].items():
         require(digest(name) == expected, 'Reviewed evidence or font changed; review and stage again')
     if all(digest(project/name) == expected for name, expected in meta['after'].items()):
@@ -389,9 +603,11 @@ def main():
     probe_parser.add_argument('project'); probe_parser.add_argument('--at', type=float, required=True)
     probe_parser.add_argument('--before', type=float, default=4); probe_parser.add_argument('--after', type=float, default=5)
     probe_parser.add_argument('--out', type=Path, required=True)
-    build = sub.add_parser('stage', help='Compile reviewed card plan with backups; no project writes')
-    build.add_argument('project'); build.add_argument('--plan', type=Path, required=True); build.add_argument('--out', type=Path, required=True)
-    build.add_argument('--font', type=Path, default=choose_font())
+    for command, help_text in [('stage', 'Compile reviewed card plan with backups; no project writes'),
+                               ('restyle', 'Preserve saved owned titles and restyle/add reviewed cards')]:
+        build = sub.add_parser(command, help=help_text)
+        build.add_argument('project'); build.add_argument('--plan', type=Path, required=True); build.add_argument('--out', type=Path, required=True)
+        build.add_argument('--font', type=Path, default=choose_font())
     for command in ('apply', 'verify', 'restore'):
         item = sub.add_parser(command); item.add_argument('stage', type=Path)
     args = parser.parse_args()
@@ -402,9 +618,10 @@ def main():
     elif args.command == 'probe':
         from media import probe
         output = probe(inspect(resolve(args.project)), args.at, args.before, args.after, args.out)
-    elif args.command == 'stage':
+    elif args.command in ('stage', 'restyle'):
         require(args.font is not None, 'No local serif font found; provide --font with an installed TTF/OTF/TTC')
-        output = {'stage': str(stage(resolve(args.project), read(args.plan), args.out, args.font)), 'applied': False}
+        output = {'stage': str(stage(resolve(args.project), read(args.plan), args.out, args.font,
+                                    preserve_owned=args.command == 'restyle')), 'applied': False}
     else:
         output = globals()[args.command](args.stage)
     print(json.dumps(output, ensure_ascii=False, indent=2))
