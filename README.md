@@ -49,7 +49,7 @@ Nếu đã biết hướng mỹ thuật, nói thêm, ví dụ:
 - “Phim tài liệu: chữ trung tính, ưu tiên đọc rõ và thông tin.”
 - “Tình cảm: serif mềm, màu ấm, hiệu ứng nhẹ.”
 
-Bản **0.1.1** bổ sung mặc định tên + vai trò, cỡ chữ 6.2/3.8 trong đơn vị CapCut và vị trí hai dòng -0.64/-0.77 cho card nhân vật; có thể tùy biến theo phim. Các card thời gian/địa điểm giữ mặc định riêng.
+Card nhân vật mặc định có tên + vai trò đã được xác lập. Cỡ chữ, font và vị trí được chọn theo reference và từng cảnh; các con số mặc định không phải tiêu chuẩn thẩm mỹ cho mọi phim.
 
 Codex lựa font có sẵn trên máy, màu, cỡ, khoảng cách, vị trí và thời gian fade theo phim. Có 5 điểm xuất phát: drama, thriller, tài liệu, tình cảm, noir; có thể tùy chỉnh từng card trong cùng hệ thống. Bản này tạo typography, bóng nhẹ và opacity fade; chưa có glitch, tracking động, freeze frame hay effect pack.
 
@@ -65,6 +65,7 @@ Không đoán tên từ khuôn mặt, không spoil người đang được giấ
 |---|---|
 | Codex local có quyền đọc file và chạy terminal | Phân tích, chọn card và gọi công cụ |
 | Python 3.10+ | Cài và chỉnh dữ liệu project, chỉ dùng thư viện chuẩn |
+| Pillow, chỉ khi dựng preview có chữ | Codex chuẩn bị trong môi trường Python local; lệnh chỉnh draft không phụ thuộc Pillow |
 | FFmpeg + ffprobe trên PATH | Trích khung hình/âm thanh quanh vị trí dự kiến |
 | Project CapCut local và media gốc còn truy cập được | Đọc timeline, xem cảnh, nghe thoại |
 | Kịch bản/caption/reference có thể xác minh | Xác định thời gian, địa điểm và nhân vật |
@@ -87,6 +88,14 @@ Project, ảnh, tiếng, font và bản sao lưu ở local; installer chỉ tả
 
 ## Giới hạn đã biết
 
+### Bản sửa đang thử
+
+- Đối chiếu kịch bản với đúng phiên bản footage, VIDEO đã trim/speed và lần đầu nhìn thấy nhân vật; xem đủ cả hold và trước/sau cut. Không suy thứ trong tuần từ ánh sáng hay số scene.
+- Plan mới cần evidence và review độc lập đủ mọi card trước apply. Review hình học dựng lại zoom/pan/overlay hỗ trợ; bounds không phải số đo chữ thật.
+- Có preview chữ trên footage chuyển động với font đã đối chiếu theo ví dụ thật. Codex tự chuẩn bị calibration local; không bắt bạn sửa JSON. Preview ghi rõ giới hạn so với engine CapCut, không tự thu nhỏ để giấu tràn chữ.
+- Subtitle theo mẫu native được giữ editable, bảo toàn lời/timing/recognition; có thể dời/wrap đúng cue đã xem khi vướng hành động. Linked cues dùng chung material được chặn khi wrap xung đột.
+- Native fade-in/out có thể tái dùng theo cặp resource đã kiểm; hold ngắn được dùng khi có lý do và còn đủ thời gian đọc, không đặt card lấn sang cảnh trước chỉ để đạt số giây mặc định.
+
 ### Bản v0.1.3
 
 - Nhãn nhân vật có thể hiện trong thoại; hai nhãn độc lập hiện đồng thời khi đã rà vị trí đúng người và vùng subtitle.
@@ -105,7 +114,7 @@ Xem [tham chiếu lệnh và plan](skills/capcut-cinematic-cards/references/tool
 - Chỉ ghi draft JSON **không mã hóa, schema `360000`**. Định dạng khác sẽ dừng; không đổi schema bằng tay để vượt kiểm tra.
 - Đường dẫn mặc định hỗ trợ tìm project macOS/Windows; có thể truyền đường dẫn chính xác. Mã xử lý file dùng Python đa nền tảng. Chạy file và media đã được kiểm tra trên macOS; chưa xác minh CapCut native trên Windows/Linux.
 - Hỗ trợ map compound lồng, trim và tốc độ cố định. Reverse, loop, curve speed và compound ngoài chưa được map; Codex phải bỏ/defer vị trí thiếu bằng chứng.
-- Khung hình trích từ nguồn **chưa compositing**. Crop, hiệu ứng, overlay, phụ đề và transition cần được đối chiếu từ draft; ảnh nguồn không chứng minh được kết quả cuối trong CapCut.
+- Khung hình nguồn thô chưa compositing. Review dựng lại static zoom/pan và một số overlay; preview chữ có calibration riêng. Geometry/effects chưa hỗ trợ được từ chối hoặc ghi rõ giới hạn; các hình này không chứng minh engine CapCut hiển thị giống hệt.
 - Kiểm tra file thành công chứng minh dữ liệu gốc được giữ, **không chứng minh CapCut đã render/playback đúng**. Skill phải nói rõ trạng thái này. Không có renderer CapCut hoặc thao tác GUI đi kèm.
 
 ## Cho người phát triển
@@ -114,7 +123,7 @@ Xem [tham chiếu lệnh và plan](skills/capcut-cinematic-cards/references/tool
 python3 -m unittest discover -s tests -v
 ```
 
-30 test đã chạy đạt trên macOS, gồm trích hình/tiếng FFmpeg bằng media giả. Các test dùng project giả, không sửa phim thật: giữ compound/audio, mirror, tránh thoại, bằng chứng nhân vật, tùy chỉnh style, stale input, editor busy, apply/restore, ownership, installer và bảo vệ đường dẫn. CI chưa được bật; chưa tuyên bố đã chạy test trên Windows/Linux.
+114 test đã chạy đạt trên macOS, gồm trích hình/tiếng FFmpeg bằng media giả. Các test dùng project giả, không sửa phim thật: giữ compound/audio, mirror, tránh thoại, bằng chứng nhân vật, tùy chỉnh style, stale input, editor busy, apply/restore, ownership, installer và bảo vệ đường dẫn. CI chưa được bật; chưa tuyên bố đã chạy test trên Windows/Linux.
 
 [Lệnh và schema plan](skills/capcut-cinematic-cards/references/tool.md) · [Nguyên tắc chọn card và style](skills/capcut-cinematic-cards/references/editing.md)
 

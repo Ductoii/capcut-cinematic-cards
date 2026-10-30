@@ -92,6 +92,19 @@ def strip_owned(data, state):
             require(set(found) == set(owned), 'Owned cards were removed or changed manually')
             require(all(object_hash(found[ident]) == signature for ident, signature in owned.items()), 'Owned cards changed manually; preserve those edits')
             collection[:] = [item for item in collection if item.get('id') not in owned]
+        owned_animations = state.get('animations', {})
+        require(not any(set(s.get('extra_material_refs', [])) & set(owned_animations)
+                        for t in base['tracks'] for s in t.get('segments', [])),
+                'Owned animation is now referenced by unowned user data; preserve the shared resource')
+        animations = base['materials'].get('material_animations', [])
+        found = {item['id']: item for item in animations if item.get('id') in owned_animations}
+        require(set(found) == set(owned_animations) and
+                all(object_hash(found[i]) == h for i, h in owned_animations.items()),
+                'Owned native animations changed; preserve those edits')
+        animations[:] = [item for item in animations if item.get('id') not in owned_animations]
+        if state.get('animations_container_created'):
+            require(not animations, 'New unowned animation found in created animation collection')
+            base['materials'].pop('material_animations', None)
         if state.get('texts_container_created'):
             require(not base['materials'].get('texts'), 'New unowned text found in created text collection')
             base['materials'].pop('texts', None)
@@ -117,7 +130,10 @@ def ownership_report(data, state, signature, state_hash):
         return report
     require(state.get('project_id') == data.get('id') and state.get('version') == 1,
             'Incompatible card ownership state')
-    for key, values in [('tracks', data['tracks']), ('materials', data['materials'].get('texts', []))]:
+    collections = [('tracks', data['tracks']), ('materials', data['materials'].get('texts', []))]
+    if state.get('animations'):
+        collections.append(('animations', data['materials'].get('material_animations', [])))
+    for key, values in collections:
         found = [v for v in values if v.get('id') in state[key]]
         require(len({v['id'] for v in found}) == len(found), 'Duplicate owned ID; review manually')
         report[key] = {v['id']: object_hash(v) for v in found}
@@ -142,10 +158,15 @@ def reviewed_state(data, state, signature, state_hash, plan):
         require(isinstance(review, dict) and isinstance(review.get('findings'), str) and
                 review['findings'].strip(), 'Owned titles changed; compare the previous stage and record ownership_review findings')
         require(all(review.get(k) == report[k] for k in
-                    ('project_sha256', 'state_sha256', 'tracks', 'materials')),
+                    ('project_sha256', 'state_sha256', 'tracks', 'materials') +
+                    (('animations',) if state.get('animations') else ())),
                 'Ownership review is stale or incomplete; inspect and review again')
     updated = copy.deepcopy(state)
     updated.update(tracks=report['tracks'], materials=report['materials'])
+    if state.get('animations'):
+        updated['animations'] = report['animations']
+    if any(m.get('id') not in state.get('animations', {}) for m in data['materials'].get('material_animations', [])):
+        updated['animations_container_created'] = False
     if any(m.get('id') not in state['materials'] for m in data['materials'].get('texts', [])):
         # A user-added title now owns the collection too; never remove that collection.
         updated['texts_container_created'] = False
@@ -214,6 +235,16 @@ def validate_layouts(cards, plan):
         if bounds is not None:
             box(bounds)
             require(card['evidence'].get('layout_review'), 'Record full-hold layout_review for reviewed bounds')
+            layout = card.get('layout', 'lower-left')
+            options = card.get('text_layout', {})
+            x = card.get('x', -.52 if layout == 'lower-left' else 0.)
+            y = card.get('y', -.66 if layout == 'lower-left' else .035)
+            for role in ('title', 'detail') if card.get('detail') else ('title',):
+                saved = card.get('_saved_positions', {}).get(role, {})
+                ax = options.get(role+'_x', saved.get('x', x))
+                ay = options.get(role+'_y', saved.get('y', y-(.13 if role == 'detail' else 0.)))
+                require(bounds[0] <= ax <= bounds[2] and bounds[1] <= ay <= bounds[3],
+                        'Declared bounds do not contain the '+role+' anchor; bounds are not a native text measurement')
             for zone in card.get('exclusion_zones', []):
                 require(not intersects(bounds, box(zone)), 'Card bounds collide with a subtitle/face/gesture exclusion zone')
         group = card.get('simultaneous_group')
@@ -247,11 +278,66 @@ def track_identity(project_id, card, detail):
     return identity(project_id, role)
 
 
-def validate_plan(plan, data, signature, font):
-    require(plan.get('version') == 1, 'Plan version must be 1')
+def review_manifest(card, left, right, signature, evidence, sources):
+    """Bind selected frames to real probe times; this does not recognize people."""
+    proof = card['evidence']
+    if not proof.get('manifest'):
+        return
+    path = Path(proof['manifest']).expanduser().resolve(strict=True)
+    manifest = read(path)
+    require(manifest.get('project_sha256') == signature, 'Frame manifest belongs to a different project revision')
+    entries = {str(Path(f['file']).resolve()): f for f in manifest.get('frames', [])}
+    moving = [s for s in sources if s['kind'] == 'videos' and s.get('source_type') != 'photo']
+    def usable(frame):
+        at = number(frame.get('timeline_time'), 'frame timeline time')
+        return frame.get('source_type') != 'photo' or not any(s['start'] <= at < s['end'] for s in moving)
+    selected = []
+    for name in proof['frames']:
+        frame = entries.get(str(Path(name).resolve()))
+        require(frame is not None, 'Review frame is absent from its manifest')
+        if usable(frame):
+            selected.append(number(frame.get('timeline_time'), 'frame timeline time'))
+    # Probe samples every half second, plus source boundaries. Samples must reach
+    # both ends and leave no unsampled interval longer than that cadence.
+    times = sorted(set(t for t in selected if left-.51 <= t <= right+.51))
+    require(times and times[0] <= left+.51 and times[-1] >= right-.51 and
+            all(b-a <= .51 for a, b in zip(times, times[1:])),
+            'Selected frame coverage does not cover the full card hold; include cut-adjacent and end frames')
+    if card.get('kind') == 'character':
+        selected_files = {str(Path(f).resolve()) for f in proof['frames']}
+        for cut in manifest.get('cuts', []):
+            at = number(cut['timeline_time'], 'cut timeline time')
+            if not left < at < right:
+                continue
+            reviews = [r for r in proof.get('cut_continuity', []) if abs(number(r.get('at'), 'reviewed cut')-at) < .02]
+            require(len(reviews) == 1, 'Character hold crosses a cut without a unique identity continuity review; end before it or review both shots')
+            review = reviews[0]
+            require(card.get('characters') and set(card['characters']) <= set(review.get('characters', [])) and
+                    isinstance(review.get('review'), str) and review['review'].strip(),
+                    'Cut continuity must confirm the same principal IDs on both sides')
+            for side in ('before', 'after'):
+                name = str(Path(review.get(side, '')).resolve())
+                frame = entries.get(name)
+                require(name in selected_files and frame and usable(frame),
+                        'Cut continuity needs selected footage frames on both sides, not a static overlay')
+                delta = at-number(frame['timeline_time'], 'cut frame time')
+                require((0 < delta <= .15) if side == 'before' else (-.15 <= delta < 0),
+                        'Cut continuity frame must be immediately '+side+' the cut')
+    evidence[str(path)] = digest(path)
+
+
+def validate_plan(plan, data, signature, font, sources):
+    require(plan.get('version') in (1, 2), 'Plan version must be 1 or 2')
     require(plan.get('project_sha256') == signature, 'Project changed; regenerate the plan from current inspection')
     cards = copy.deepcopy(plan.get('cards', []))
     require(isinstance(cards, list) and cards, 'Choose at least one necessary card; otherwise leave the project unchanged')
+    requirements = plan.get('requirements', {})
+    require(isinstance(requirements, dict) and not set(requirements)-{'ending', 'native_fade'} and
+            all(isinstance(v, bool) for v in requirements.values()), 'Unsupported task requirements')
+    require(not requirements.get('ending') or any(c.get('kind') == 'ending' for c in cards),
+            'The task requires an ending card')
+    require(not requirements.get('native_fade') or plan.get('native_fade_in'),
+            'The task requires native fade; opacity keyframes alone do not satisfy it')
     fps = float(data['fps'])
     evidence = {}
     ids = set()
@@ -304,28 +390,43 @@ def validate_plan(plan, data, signature, font):
         require(bool(card['title'].strip()), 'Card title is blank')
         start = number(card['start'], 'start')
         duration = number(card.get('duration', 3.2), 'duration')
-        require((0 < duration if card.get('_saved_hold') else 2.8 <= duration <= 8), 'Allow reading time: duration must be 2.8–8 seconds, normally 3.2–3.6')
+        minimum = 2.0 if card.get('kind') == 'character' else 2.8
+        proof = card.get('evidence', {})
+        short_review = proof.get('short_hold_review') if isinstance(proof, dict) else None
+        reviewed_short = (plan['version'] == 2 and 0 < duration < minimum and
+                          isinstance(short_review, str) and bool(short_review.strip()))
+        require((0 < duration if card.get('_saved_hold') else minimum <= duration <= 8 or reviewed_short),
+                'Allow reading time: normally character 2–8 seconds, other cards 2.8–8; a shorter new hold needs version2 and explicit short_hold_review')
         card['_start_us'] = round(round(start*fps)*1e6/fps)
         card['_end_us'] = round(round((start+duration)*fps)*1e6/fps)
         left, right = card['_start_us']/1e6, card['_end_us']/1e6
         require(0 <= left < right <= data['duration']/1e6, 'Card falls outside project duration')
+        if reviewed_short and not card.get('_saved_hold'):
+            require(round((right-left)*fps) >= 10, 'Short hold cannot fit the distinct opacity keyframes; this is a technical limit, not a reading-time approval')
         require(card.get('layout', 'lower-left') in ('lower-left', 'center'), 'Unknown layout')
         for key, default in [('x', -.52), ('y', -.66)]:
             require(-.82 <= number(card.get(key, default), key) <= .82, 'Keep text within the frame safe area')
         default_y = -.66 if card.get('layout', 'lower-left') == 'lower-left' else .035
-        require(not card.get('detail') or card.get('y', default_y) - .13 >= -.82, 'Detail text falls outside the safe area')
+        detail_y = text_layout.get('detail_y', card.get('_saved_positions', {}).get('detail', {}).get(
+            'y', card.get('y', default_y)-.13))
+        require(not card.get('detail') or -.82 <= detail_y <= .82, 'Detail text falls outside the safe area')
         for interval in protected:
             if card.get('kind') == 'character' and interval.get('kind') == 'dialogue':
                 continue
             require(right <= interval['start']-.15 or left >= interval['end']+.15, f'Card overlaps protected dialogue/reaction: {interval["reason"]}')
         proof = card.get('evidence', {})
         require(isinstance(proof, dict) and proof.get('visual_review') and proof.get('dialogue_review'), 'Review actual images and dialogue, recording findings')
+        if plan['version'] == 2:
+            require(proof.get('manifest') and card.get('bounds') and proof.get('layout_review'),
+                    'New plans require a probe manifest and reviewed full-label bounds')
         if card.get('kind') == 'character':
+            require(plan['version'] == 1 or card.get('characters'), 'New character plans need principal IDs for independent identity review')
             require(proof.get('character_identity') and proof.get('first_appearance'), 'Character identity and first appearance must be reviewed; do not invent a name from a face')
             omission = proof.get('role_omission_reason')
             require(card.get('detail', '').strip() or (isinstance(omission, str) and omission.strip()), 'Character role required in detail; document role_omission_reason for names-only requests, unknown roles or spoilers')
         require(number(proof.get('start'), 'review start') <= left and number(proof.get('end'), 'review end') >= right, 'Evidence window does not cover the card')
         require(isinstance(proof.get('frames'), list) and bool(proof['frames']), 'Review frame evidence is required')
+        review_manifest(card, left, right, signature, evidence, sources)
         for frame in proof['frames']:
             path = Path(frame).expanduser().resolve(strict=True)
             require(path.is_file() and path.read_bytes()[:3] in (b'\xff\xd8\xff', b'\x89PN'), 'Expected a local review frame (JPEG/PNG)')
@@ -342,30 +443,133 @@ def native_fade(plan, data, evidence):
         return None
     require(isinstance(option, dict) and isinstance(option.get('review'), str) and option['review'].strip(),
             'Native fade requires a review of an existing local entry animation')
+    external = option.get('source_project')
+    source_data = data
+    if external:
+        _, source_file, source_data, _, source_hash = load(external)
+        require(option.get('source_project_sha256') == source_hash,
+                'Native template project changed; inspect and review its current revision')
+        evidence[str(source_file)] = source_hash
     ident = option.get('material_id')
-    material = next((m for m in data['materials'].get('material_animations', []) if m.get('id') == ident), None)
-    require(material and len(material.get('animations', [])) == 1 and
-            material['animations'][0].get('type') == 'in', 'Reuse one existing native entry animation; never invent effect IDs')
-    source = next((s for t in data['tracks'] if t.get('type') == 'text' for s in t.get('segments', [])
+    material = next((m for m in source_data['materials'].get('material_animations', []) if m.get('id') == ident), None)
+    animations = material.get('animations', []) if material else []
+    types = [a.get('type') for a in animations]
+    require(material and (types == ['in'] or len(types) == 2 and set(types) == {'in', 'out'}),
+            'Reuse an existing native entry or in/out pair; never invent effect IDs')
+    source = next((s for t in source_data['tracks'] if t.get('type') == 'text' for s in t.get('segments', [])
                    if s.get('id') == option.get('source_segment_id')), None)
     require(source and ident in source.get('extra_material_refs', []), 'Native fade must already belong to the reviewed source text segment')
-    root = Path(material['animations'][0]['path']).expanduser().resolve(strict=True)
-    require(root.is_dir() and isinstance(option.get('files'), list) and option['files'], 'List reviewed native fade resource files')
+    roots = [Path(a['path']).expanduser().resolve(strict=True) for a in animations]
+    require(all(root.is_dir() for root in roots) and isinstance(option.get('files'), list) and option['files'],
+            'List reviewed native fade resource files')
+    covered = set()
     for name in option['files']:
         path = Path(name).expanduser().resolve(strict=True)
-        require(path.is_file() and path.is_relative_to(root), 'Fade evidence must stay inside its existing local resource')
+        matches = {root for root in roots if path.is_relative_to(root)}
+        require(path.is_file() and matches, 'Fade evidence must stay inside its existing local resource')
+        covered.update(matches)
         evidence[str(path)] = digest(path)
+    require(covered == set(roots), 'Pin resource files for both native fade directions')
+    durations = option.get('durations_seconds')
+    if durations is not None:
+        require(isinstance(durations, dict) and durations and not set(durations)-set(types),
+                'Native fade durations must name existing in/out directions')
+        durations = {kind: round(number(value, 'native fade seconds')*1000000)
+                     for kind, value in durations.items()}
+        require(all(value > 0 for value in durations.values()), 'Native fade durations must be positive')
+    if external or durations is not None:
+        imported = copy.deepcopy(material)
+        suffix = '/'+object_hash(durations) if durations is not None else ''
+        imported['id'] = identity(data['id'], 'native-animation/'+source_data['id']+'/'+ident+suffix)
+        for animation in imported['animations']:
+            if durations is not None and animation['type'] in durations:
+                animation['duration'] = durations[animation['type']]
+        return {'material': imported}
     return ident
 
 
 def attach_fade(segment, ident, data):
     if ident is None:
         return
+    if isinstance(ident, dict):
+        ident = ident['material']['id']
     animations = {m['id'] for m in data['materials'].get('material_animations', [])}
     refs = segment.setdefault('extra_material_refs', [])
     require(not (set(refs) & (animations-{ident})), 'Preserve the different existing text animation; review it separately')
     if ident not in refs:
         refs.append(ident)
+
+
+def import_fade(result, state, fade):
+    if not isinstance(fade, dict):
+        return
+    material = fade['material']
+    created = 'material_animations' not in result['materials']
+    animations = result['materials'].setdefault('material_animations', [])
+    existing = next((m for m in animations if m.get('id') == material['id']), None)
+    if existing:
+        require(existing == material, 'Imported native animation ID collides with existing animation data')
+        return
+    animations.append(copy.deepcopy(material))
+    state.setdefault('animations', {})[material['id']] = object_hash(material)
+    if created:
+        state['animations_container_created'] = True
+
+
+def subtitle_template(data, plan, evidence):
+    option = plan.get('subtitle_template')
+    if option is None:
+        return data, []
+    require(isinstance(option, dict) and isinstance(option.get('review'), str) and option['review'].strip(),
+            'Subtitle appearance needs a reviewed native template')
+    project, source, template_data, _, signature = load(option['source_project'])
+    require(option.get('source_project_sha256') == signature, 'Subtitle template changed; inspect and review again')
+    evidence[str(source)] = signature
+    material = next((copy.deepcopy(m) for m in template_data['materials'].get('texts', [])
+                     if m.get('id') == option.get('material_id') and m.get('type') == 'subtitle'), None)
+    require(material is not None, 'Choose an existing native subtitle material as the appearance template')
+    content = json.loads(material['content'])
+    fonts = [material] + [s.get('font', {}) for s in content.get('styles', [])]
+    for font in fonts:
+        key = 'font_path' if font is material else 'path'
+        if not font.get(key):
+            continue
+        raw = re.sub(r'^##_draftpath_placeholder_[^/\\]+_##[/\\]', '', font[key])
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = project/path
+        path = path.resolve(strict=True)
+        require(path.is_file() and path.read_bytes()[:4] in (b'\x00\x01\x00\x00', b'OTTO', b'ttcf', b'true'),
+                'Subtitle template font must be a readable local font')
+        font[key] = str(path)
+        evidence[str(path)] = digest(path)
+    material['content'] = json.dumps(content, ensure_ascii=False, separators=(',', ':'))
+    y, columns = option.get('y'), option.get('wrap_columns')
+    require(y is None or -.85 <= number(y, 'subtitle y') <= .8, 'Subtitle y outside the reviewed canvas')
+    require(columns is None or isinstance(columns, int) and not isinstance(columns, bool) and 8 <= columns <= 120,
+            'Choose a readable subtitle wrap width')
+    positions = option.get('cue_positions', [])
+    require(isinstance(positions, list), 'Subtitle cue_positions must be a reviewed list')
+    reviewed = {}
+    for position in positions:
+        require(isinstance(position, dict) and not set(position)-{'segment_id', 'x', 'y', 'wrap_columns', 'review'},
+                'Unsupported subtitle cue position fields')
+        ident = position.get('segment_id')
+        require(isinstance(ident, str) and ident and isinstance(position.get('review'), str) and position['review'].strip(),
+                'Subtitle cue position needs an exact segment ID and whole-cue review')
+        require(ident not in reviewed, 'Duplicate subtitle cue position')
+        require('x' in position or 'y' in position, 'Choose a subtitle cue position')
+        for axis in ('x', 'y'):
+            if axis in position:
+                require(-.85 <= number(position[axis], 'subtitle cue '+axis) <= .8,
+                        'Subtitle cue position outside the reviewed canvas')
+        if 'wrap_columns' in position:
+            width = position['wrap_columns']
+            require(isinstance(width, int) and not isinstance(width, bool) and 8 <= width <= 120,
+                    'Choose a readable subtitle cue wrap width')
+        reviewed[ident] = position
+    from native_text import restyle_subtitles
+    return restyle_subtitles(data, material, y, columns, reviewed)
 
 
 def effective_restyle_plan(plan, data, state):
@@ -387,6 +591,8 @@ def effective_restyle_plan(plan, data, state):
                     path = st.get('font', {}).get('path')
                     if path:
                         card.setdefault('evidence', {}).setdefault('files', []).append(path)
+        card['_saved_positions'] = {role: copy.deepcopy(segments[mid]['clip']['transform'])
+                                    for role, mid in [('title', main_id), ('detail', role_id)] if mid in materials}
         card['_saved_hold'] = True
         card.update(start=timerange['start']/1e6, duration=timerange['duration']/1e6,
                     **segment['clip']['transform'])
@@ -497,13 +703,24 @@ def stage(project, plan, out, font, preserve_owned=False):
     plan = copy.deepcopy(plan)
     for card in plan.get('cards', []):
         card.pop('_saved_hold', None)
+        card.pop('_saved_positions', None)
     if preserve_owned:
         saved_state = reviewed_state(original, old_state, signature, digest(project/STATE), plan)
         plan = effective_restyle_plan(plan, original, saved_state)
-    cards, evidence = validate_plan(plan, original, signature, font)
-    fade = native_fade(plan, original, evidence)
     from media import flatten
-    for source in flatten(original, project)['sources']:
+    mapped_sources = flatten(original, project)['sources']
+    cards, evidence = validate_plan(plan, original, signature, font, mapped_sources)
+    fade = native_fade(plan, original, evidence)
+    if fade and cards:
+        material = fade['material'] if isinstance(fade, dict) else next(
+            m for m in original['materials']['material_animations'] if m['id'] == fade)
+        durations = [number(a.get('duration'), 'native fade duration for hold') for a in material['animations']]
+        require(all(d > 0 for d in durations) and all(sum(durations) < c['_end_us']-c['_start_us'] for c in cards),
+                'Native fades consume the hold; choose a readable hold/effect treatment rather than extending across an identity cut')
+    working, subtitle_changes = subtitle_template(original, plan, evidence)
+    if subtitle_changes:
+        plan['_subtitle_changes'] = subtitle_changes
+    for source in mapped_sources:
         if any(source['start'] < c['evidence']['end'] and source['end'] > c['evidence']['start'] for c in cards):
             path = Path(source['path']).resolve(strict=True)
             require(path.is_file(), 'Reviewed source is not a readable file')
@@ -513,9 +730,10 @@ def stage(project, plan, out, font, preserve_owned=False):
             path = Path(name).expanduser().resolve(strict=True)
             require(path.is_file(), 'Additional evidence must be a local file')
             evidence[str(path)] = digest(path)
-    base = strip_owned(original, saved_state)
+    base = strip_owned(working, saved_state)
     if preserve_owned:
-        result, state = restyle_result(original, saved_state, cards, font, fade)
+        result, state = restyle_result(working, saved_state, cards, font, fade)
+        import_fade(result, state, fade)
         require(strip_owned(result, state) == base, 'Restyle changed unowned project data')
         return write_stage(project, active, original, paths, signature, plan, out, result, state, base, evidence)
     result = copy.deepcopy(base)
@@ -543,6 +761,7 @@ def stage(project, plan, out, font, preserve_owned=False):
             result['materials']['texts'].append(material); new_materials.append(material)
     state = dict(version=1, project_id=original.get('id'), texts_container_created='texts' not in base['materials'], tracks={t['id']: object_hash(t) for t in new_tracks},
                  materials={m['id']: object_hash(m) for m in new_materials})
+    import_fade(result, state, fade)
     require(strip_owned(result, state) == base, 'Integrity check: original project changed while building titles')
     return write_stage(project, active, original, paths, signature, plan, out, result, state, base, evidence)
 
@@ -680,8 +899,202 @@ def verify(directory):
     return dict(verified=True, project=str(project), file_verification_only=True, editor_render_verified=False)
 
 
-def apply(directory):
+def visual_review_facts(directory):
+    """Neutral staged facts and real frames; exclude the author's review conclusions."""
     directory, project, meta = transaction(directory)
+    plan, data = read(directory/'plan.json'), read(directory/'draft.json')
+    materials = {m['id']: m for m in data['materials'].get('texts', [])}
+    segments = {s['material_id']: s for t in data['tracks'] for s in t.get('segments', [])}
+    from media import flatten
+    sources = flatten(data, project)['sources']
+    moving = [s for s in sources if s['kind'] == 'videos' and s.get('source_type') != 'photo']
+    photographs = [s for s in sources if s['kind'] == 'videos' and s.get('source_type') == 'photo']
+    overlays = [{k: s.get(k) for k in ('id', 'path', 'start', 'end', 'review_framing')}
+                for s in sources if s.get('source_type') == 'photo']
+    cards = []
+    for card in plan['cards']:
+        proof = card['evidence']
+        require(proof.get('manifest'), 'Visual bundle needs probe manifests; regenerate legacy evidence')
+        manifest_path = Path(proof['manifest']).resolve(strict=True)
+        require(meta['evidence'].get(str(manifest_path)) == digest(manifest_path), 'Review manifest changed')
+        manifest = read(manifest_path)
+        title_id = identity(data['id'], card['id']+'/title')
+        segment = segments[title_id]; timerange = segment['target_timerange']
+        left, right = timerange['start']/1e6, (timerange['start']+timerange['duration'])/1e6
+        lines = {}
+        for role in ('title', 'detail'):
+            mid = identity(data['id'], card['id']+'/'+role)
+            if mid in materials:
+                material = materials[mid]
+                lines[role] = dict(text=json.loads(material['content'])['text'],
+                                   font=material.get('font_path'), size=material.get('font_size'),
+                                   clip=copy.deepcopy(segments[mid]['clip']))
+        frames = []
+        for frame in manifest['frames']:
+            at = frame['timeline_time']
+            if not left-.15 <= at <= right+.15:
+                continue
+            photo = frame.get('source_type') == 'photo'
+            if photo and any(s['start'] <= at < s['end'] for s in moving):
+                continue  # A static logo/overlay cannot substitute for the active footage.
+            item = {k: frame.get(k) for k in ('file', 'timeline_time', 'source', 'source_time')}
+            item.update(sha256=digest(frame['file']), inside_hold=left <= at < right)
+            require(item['sha256'], 'Review frame missing')
+            pool = photographs if photo else moving
+            if pool or photo:
+                candidates = [s for s in pool if s['start'] <= at < s['end'] and
+                              (s['id'] == frame.get('source_segment_id') if frame.get('source_segment_id') else
+                               str(Path(s['path']).resolve()) == str(Path(frame.get('source', '')).resolve()))]
+                require(len(candidates) == 1, 'Probe framing cannot be mapped uniquely; regenerate helper evidence')
+                item['review_framing'] = copy.deepcopy(candidates[0]['review_framing'])
+            frames.append(item)
+        frames.sort(key=lambda f: (f['timeline_time'], f['file']))
+        require(any(f['inside_hold'] for f in frames), 'No footage frames inside card hold')
+        cards.append(dict(id=card['id'], kind=card.get('kind','time-location'),
+                          characters=card.get('characters', []), start=left, end=right,
+                          lines=lines, bounds=card.get('bounds'), frames=frames))
+    return dict(draft_sha256=digest(directory/'draft.json'), plan_sha256=digest(directory/'plan.json'),
+                source_frames_only=True, native_render_verified=False, canvas=data.get('canvas_config'),
+                static_overlays=overlays, cards=cards)
+
+
+def review_bundle(directory, out):
+    directory, project, _ = transaction(directory)
+    out = Path(out).expanduser().resolve()
+    require(not out.exists() and not out.is_relative_to(project), 'Use a fresh review folder outside the project')
+    facts = visual_review_facts(directory)
+    import shutil
+    import tempfile
+    from review_labels import footer_ppm
+    ffmpeg = shutil.which('ffmpeg')
+    require(ffmpeg, 'FFmpeg required to assemble source review sheets')
+    out.mkdir(parents=True)
+    display_dir = out/'frames'; display_dir.mkdir()
+    canvas = facts['canvas'] or dict(width=1920, height=1080)
+    display_height = round(960*canvas['height']/canvas['width']/2)*2
+    footer_height = 56
+    legend = 'YELLOW BOUNDS | CYAN = IMAGE OVERLAY - NOT TEXT'
+    pages = []
+    for card in facts['cards']:
+        bounds = card['bounds']
+        overlay = ''
+        if bounds:
+            l, b, r, t = bounds
+            overlay = f'drawbox=x=iw*{(l+1)/2}:y=ih*{(1-t)/2}:w=iw*{(r-l)/2}:h=ih*{(t-b)/2}:color=yellow:t=3,'
+        for offset in range(0, len(card['frames']), 9):
+            frames = card['frames'][offset:offset+9]
+            target = out/f"{card['id']}-{offset//9+1:02d}.jpg"
+            chunks, displays = [], []
+            for index, frame in enumerate(frames, offset):
+                raw = Path(frame['file']).read_bytes()
+                require(raw[:3] == b'\xff\xd8\xff', 'Review sheets require the JPEG frames produced by probe')
+                geometry = frame.get('review_framing')
+                require(not geometry or geometry['status'] in ('static_uniform', 'static_overlay_extent'),
+                        'Unsupported review framing: '+str(geometry))
+                filters = []
+                if geometry:
+                    if geometry['status'] == 'static_overlay_extent':
+                        l, b, r, t = geometry['bounds']
+                        require(l <= -1 and b <= -1 and r >= 1 and t >= 1,
+                                'Photo hold exposes canvas background; separate native geometry review is required')
+                        l, b, r, t = ((-2-l-r)/(r-l), (-2-b-t)/(t-b), (2-l-r)/(r-l), (2-b-t)/(t-b))
+                    else:
+                        l, b, r, t = geometry['crop']
+                    filters.append(f'crop=w=iw*{(r-l)/2}:h=ih*{(t-b)/2}:x=iw*{max(0., (l+1)/2)}:y=ih*{max(0., (1-t)/2)}:exact=1')
+                filters.append(f'scale=960:{display_height}')
+                for asset in facts['static_overlays']:
+                    if not asset['start'] <= frame['timeline_time'] < asset['end']:
+                        continue
+                    extent = asset['review_framing']
+                    require(extent['status'] == 'static_overlay_extent', 'Unsupported static overlay framing: '+str(extent))
+                    l, b, r, t = extent['bounds']
+                    filters.append(f'drawbox=x=iw*{(l+1)/2}:y=ih*{(1-t)/2}:w=iw*{(r-l)/2}:h=ih*{(t-b)/2}:color=cyan:t=2')
+                if overlay and frame['inside_hold']:
+                    filters.append(overlay.rstrip(','))
+                status = 'IN CARD' if frame['inside_hold'] else 'CONTEXT-CARD HIDDEN'
+                source_time = frame.get('source_time')
+                source_label = (f'{source_time:.3f}S' if type(source_time) in (int, float) and
+                                math.isfinite(source_time) else 'UNKNOWN')
+                label = f"{index:03d} T{frame['timeline_time']:.3f}S SRC{source_label} {status}"
+                # Keep all evidence pixels: annotations sit outside the picture.
+                display = display_dir/f"{card['id']}-{index:03d}.jpg"
+                with tempfile.TemporaryDirectory(prefix='.review-label-', dir=out) as label_dir:
+                    footer = Path(label_dir)/'footer.ppm'
+                    footer.write_bytes(footer_ppm([label, legend], height=footer_height))
+                    rendered = subprocess.run([ffmpeg, '-v', 'error', '-f', 'image2pipe', '-vcodec', 'mjpeg', '-i', '-',
+                        '-i', str(footer), '-filter_complex', f"[0:v]{','.join(filters)}[picture];[picture][1:v]vstack=inputs=2[out]",
+                        '-map', '[out]', '-frames:v', '1', '-threads', '1',
+                        '-q:v', '3', '-f', 'image2pipe', '-vcodec', 'mjpeg', '-'], input=raw, capture_output=True)
+                require(rendered.returncode == 0 and rendered.stdout[:3] == b'\xff\xd8\xff',
+                        'Framed review image failed: '+rendered.stderr.decode(errors='replace')[-700:])
+                display.write_bytes(rendered.stdout); chunks.append(rendered.stdout)
+                displays.append(dict(source_file=frame['file'], file=str(display), sha256=digest(display), label=label))
+            process = subprocess.run([ffmpeg, '-v', 'error', '-f', 'image2pipe', '-vcodec', 'mjpeg', '-i', '-',
+                                      '-vf', 'scale=480:-2,tile=3x3:padding=3:margin=3',
+                                      '-frames:v', '1', '-q:v', '3', '-y', str(target)],
+                                     input=b''.join(chunks), capture_output=True)
+            require(process.returncode == 0 and target.is_file(), 'Review sheet failed: '+process.stderr.decode(errors='replace')[-700:])
+            pages.append(dict(card_id=card['id'], sheet=str(target), sha256=digest(target), frames=frames, display_frames=displays))
+    bundle = dict(version=1, stage=str(directory), facts=facts, pages=pages,
+                  display_geometry=dict(picture_width=960, picture_height=display_height, footer_height=footer_height),
+                  display_legend=legend,
+                  note='Static same-aspect zoom/pan reconstructed from actual draft; yellow=declared card, cyan=static image extent. NOT native text/effects/compositing. Open display_frames for full-size geometry review and frames for raw source evidence. Read frame order/times in JSON. Review both who is visible and which person the label points at.')
+    path = out/'bundle.json'; path.write_bytes(encoded(bundle))
+    return dict(bundle=str(path), cards=len(facts['cards']), pages=len(pages), native_render_verified=False)
+
+
+def validate_visual_review(directory, verdict):
+    plan = read(directory/'plan.json')
+    if plan.get('version') == 1 and verdict is None:
+        return
+    require(verdict is not None, 'New plans require an independent visual review before apply; generate a review bundle')
+    verdict = read(Path(verdict).expanduser().resolve(strict=True))
+    require(verdict.get('version') == 1 and verdict.get('independent') is True and verdict.get('reviewer'),
+            'Record an independent reviewer; author review is not independent')
+    bundle_path = Path(verdict['bundle']).expanduser().resolve(strict=True)
+    require(digest(bundle_path) == verdict.get('bundle_sha256'), 'Reviewed visual bundle changed')
+    bundle = read(bundle_path)
+    facts = visual_review_facts(directory)
+    require(bundle.get('stage') == str(directory) and bundle.get('facts') == facts, 'Visual review is stale or covers a different staged product')
+    for page in bundle['pages']:
+        require(digest(page['sheet']) == page['sha256'], 'Reviewed source sheet changed')
+        require([f['source_file'] for f in page.get('display_frames', [])] == [f['file'] for f in page['frames']],
+                'Reviewed display frames are incomplete')
+        require(all(digest(f['file']) == f['sha256'] for f in page['display_frames']), 'Reviewed display frame changed')
+    require({p['card_id'] for p in bundle['pages']} == {c['id'] for c in facts['cards']}, 'Visual bundle pages are incomplete')
+    for card in facts['cards']:
+        require([f for p in bundle['pages'] if p['card_id'] == card['id'] for f in p['frames']] == card['frames'],
+                'Visual bundle pages do not cover every actual frame')
+    reviews = verdict.get('cards', [])
+    require(len(reviews) == len(facts['cards']) and {r.get('id') for r in reviews} == {c['id'] for c in facts['cards']},
+            'Independent review must cover every card')
+    for card in facts['cards']:
+        review = next(r for r in reviews if r['id'] == card['id'])
+        observed = review.get('frames', [])
+        require(len(observed) == len(card['frames']) and {r.get('file') for r in observed} == {f['file'] for f in card['frames']},
+                'Independent review must observe every bundled frame')
+        for frame in card['frames']:
+            row = next(r for r in observed if r['file'] == frame['file'])
+            require(isinstance(row.get('observation'), str) and row['observation'].strip(), 'Record actual per-frame observations')
+            if not frame['inside_hold']:
+                continue
+            require(row.get('layout_passed') is True, 'Independent visual review rejected card layout: '+card['id'])
+            if card['kind'] == 'character':
+                require(set(card['characters']) <= set(row.get('subjects', [])) and
+                        set(row.get('associated_characters', [])) == set(card['characters']),
+                        'Independent review rejected character identity/label association: '+card['id'])
+        require(review.get('reading_time_review') and review.get('first_appearance_review' if card['kind']=='character' else 'necessity_review'),
+                'Independent review must assess reading time and first entrance/card necessity')
+        require(review.get('reading_time_passed') is True, 'Independent review rejected reading time: '+card['id'])
+        criterion = 'first_appearance_passed' if card['kind'] == 'character' else 'necessity_passed'
+        require(review.get(criterion) is True, 'Independent review rejected first entrance/card necessity: '+card['id'])
+    require(verdict.get('native_render_verified') is False,
+            'Source-only review cannot establish native rendering; keep native acceptance separate')
+
+
+def apply(directory, review=None):
+    directory, project, meta = transaction(directory)
+    validate_visual_review(directory, review)
     require(not editor_running(), 'CapCut is running: stage is ready; save and quit the application before apply '
             '(closing its window may leave it running; on macOS use Cmd+Q)')
     for name, expected in meta['evidence'].items():
@@ -769,8 +1182,16 @@ def main():
         build = sub.add_parser(command, help=help_text)
         build.add_argument('project'); build.add_argument('--plan', type=Path, required=True); build.add_argument('--out', type=Path, required=True)
         build.add_argument('--font', type=Path, help='Explicit installed font override; restyle otherwise preserves saved fonts')
+    bundle_parser = sub.add_parser('review', help='Assemble neutral full-hold source/declared-box sheets from a stage')
+    bundle_parser.add_argument('stage', type=Path); bundle_parser.add_argument('--out', type=Path, required=True)
+    preview_parser = sub.add_parser('preview', help='Reconstruct text/motion preview with explicit observed typography; not native CapCut output')
+    preview_parser.add_argument('stage', type=Path)
+    preview_parser.add_argument('--calibration', type=Path, required=True)
+    preview_parser.add_argument('--out', type=Path, required=True)
     for command in ('apply', 'verify', 'restore'):
         item = sub.add_parser(command); item.add_argument('stage', type=Path)
+        if command == 'apply':
+            item.add_argument('--review', type=Path, help='Independent per-frame source review verdict for new plans')
     args = parser.parse_args()
     if args.command == 'projects':
         output = [{'name': p.name, 'path': str(p)} for root in project_roots() if root.is_dir() for p in root.iterdir() if (p/'draft_info.json').is_file()]
@@ -782,6 +1203,17 @@ def main():
     elif args.command in ('stage', 'restyle'):
         output = {'stage': str(stage(resolve(args.project), read(args.plan), args.out, args.font,
                                     preserve_owned=args.command == 'restyle')), 'applied': False}
+    elif args.command == 'review':
+        output = review_bundle(args.stage, args.out)
+    elif args.command == 'preview':
+        from preview import preview
+        rendered = preview(args.stage, args.calibration, args.out)
+        output = dict(preview=rendered['preview'], manifest=str(args.out.expanduser().resolve()/'manifest.json'),
+                      native_render_verified=False, windows=len(rendered['windows']),
+                      glyph_overflows=sum(row['overflow'] for row in rendered['text_bounds']),
+                      unevaluated_features=len(rendered['unsupported']))
+    elif args.command == 'apply':
+        output = apply(args.stage, args.review)
     else:
         output = globals()[args.command](args.stage)
     print(json.dumps(output, ensure_ascii=False, indent=2))
