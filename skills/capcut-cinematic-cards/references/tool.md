@@ -67,6 +67,20 @@ Titles permit up to two nonempty lines, max 96 characters; detail max 128. Keep 
 
 Style keys (global `style`, optionally overridden per card): `theme`, `title_color`, `detail_color` (`#RRGGBB`), `title_size` (3–8), `detail_size` (1.8–4.5), `title_spacing`, `detail_spacing` (0–0.3), `fade_seconds` (0.2–0.8). Native sizes are CapCut units, not points. See `scripts/styles.py` for preset values. Choose an installed font with `--font`, root `font`, or per-card `font` (most specific wins). Initial cards without a choice use a local fallback; restyles preserve existing fonts unless explicitly overridden.
 
+For new cards matching a reviewed paired native appearance, root `card_appearance` accepts:
+
+```json
+"card_appearance": {
+  "path": "/absolute/private/approved-appearance.json",
+  "sha256": "EXACT_FILE_SHA256",
+  "review": "Both title/detail appearance and stored scales reviewed against the approved example."
+}
+```
+
+The local JSON uses `version: 1` and `layers.title` / `layers.detail`. Each layer contains native `appearance` fields, one-style `rich_content_example`, `clip_scale: {"x": ..., "y": ...}` and `uniform_scale: {"on": ..., "value": ...}`. Codex prepares this from the supplied native example; users do not edit JSON. The helper copies reviewed typography/shadow/background metadata and each scale independently, generates new wording/ranges/IDs/timing/positions and attaches the requested fade separately. The JSON and used font binaries are pinned through apply. It never copies tracks, identities, timing, positions or recognition data from an appearance source.
+
+This option is for new cards, not `restyle` / `preserve_owned`. To avoid silently ignored settings, omit CLI/root/card font overrides and all global/card style keys except `fade_seconds`; `text_layout.scale` also conflicts. Reviewed position and width options remain available. Without `card_appearance`, existing theme/font behavior is unchanged. Private appearance files and fonts do not belong in the public repo.
+
 `fade_seconds` creates opacity keyframes, not a CapCut animation-tab entry. To reuse a **confirmed existing local native entry animation**, add this root option with actual IDs/paths read from the current draft:
 
 ```json

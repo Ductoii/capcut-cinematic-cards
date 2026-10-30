@@ -8,6 +8,10 @@ def identity(project_id, role):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f'capcut-cinematic-cards/{project_id}/{role}')).upper()
 
 
+def utf16_length(text):
+    return len(text.encode('utf-16-le')) // 2
+
+
 def make_text(project_id, card, detail, font, fps):
     text = card.get('detail', '') if detail else card['title']
     ident = identity(project_id, card['id'] + ('/detail' if detail else '/title'))
@@ -20,7 +24,7 @@ def make_text(project_id, card, detail, font, fps):
               'feather': .08, 'distance': 2., 'content': {'solid': {'color': [0, 0, 0]}, 'render_type': 'solid'},
               'thickness_projection_enable': False, 'angle': -45}
     content = {'text': text, 'styles': [{'fill': {'content': {'solid': {'color': colour}}, 'render_type': 'solid'},
-                'range': [0, len(text)], 'size': size, 'font': {'path': str(font), 'id': ''},
+                'range': [0, utf16_length(text)], 'size': size, 'font': {'path': str(font), 'id': ''},
                 'letter_spacing': style[role + '_spacing'], 'shadows': [shadow]}]}
     material = dict(id=ident, type='text', name=text, content=json.dumps(content, ensure_ascii=False, separators=(',', ':')),
                     font_path=str(font), font_name=font.stem, font_title=font.stem, font_size=size, font_id='', font_resource_id='',
@@ -60,6 +64,16 @@ def make_text(project_id, card, detail, font, fps):
     for option in ('lut', 'adjust', 'hsl', 'color_curves', 'hsl_curves', 'color_wheels', 'smart_color_adjust',
                    'color_match_adjust', 'color_correct_adjust', 'adjust_mask', 'video_mask', 'mask_stroke', 'mask_shadow', 'color_adjust_pro'):
         segment['enable_' + option] = False
+    approved = card.get('_appearance', {}).get(role)
+    if approved:
+        material.update(copy.deepcopy(approved['appearance']))
+        rich_style = copy.deepcopy(approved['rich_content_example']['styles'][0])
+        rich_style['range'] = [0, utf16_length(text)]
+        material['content'] = json.dumps({'text': text, 'styles': [rich_style]},
+                                         ensure_ascii=False, separators=(',', ':'))
+        material['base_content'] = material['content']
+        segment['clip']['scale'] = copy.deepcopy(approved['clip_scale'])
+        segment['uniform_scale'] = copy.deepcopy(approved['uniform_scale'])
     apply_text_layout(material, segment, card, detail)
     return material, segment
 

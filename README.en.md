@@ -49,6 +49,7 @@ Five starting themes cover heritage drama, modern thriller, documentary, intimat
 
 - Join the correct screenplay/production version to retained VIDEO trim/speed, inspect earlier appearances and whole holds on both sides of cuts, and anchor named days to explicit story cues.
 - New plans require pinned evidence and independent review of every staged card before apply. Geometry review reconstructs supported static zoom/pan and overlays; declared rectangles are not measured glyphs.
+- Reviewed paired native appearances preserve title/detail rich styling, shadows and independent scale fields; Codex prepares and pins the local template.
 - Optional calibrated visible-text previews place the actual font over moving footage. Codex prepares private observed calibration; users do not edit JSON. Requires Pillow only for this command; it does not certify native CapCut rendering or auto-shrink overflow.
 - Native subtitle templates preserve editable words/timing/recognition. Reviewed exact-ID position/wrap overrides protect individual actions; conflicting wrapping for shared materials stops safely.
 - Reviewed native in/out resource pairs and justified short holds retain a reading plateau without starting in the wrong scene to satisfy a fixed duration.
@@ -85,4 +86,4 @@ Ask Codex to restore a previous card run or remove only this skill when needed. 
 python3 -m unittest discover -s tests -v
 ```
 
-114 tests passed locally on macOS. Tests cover original-track preservation, mirror synchronization, speech protection, character evidence, styling, stale sources, busy editor, owned updates, guarded rollback, source mapping and installer safety. [Agent workflow](skills/capcut-cinematic-cards/SKILL.md) · [Commands/plan](skills/capcut-cinematic-cards/references/tool.md) · [Editorial guide](skills/capcut-cinematic-cards/references/editing.md) · [MIT license](LICENSE)
+122 tests passed locally on macOS. Tests cover original-track preservation, mirror synchronization, speech protection, character evidence, styling, stale sources, busy editor, owned updates, guarded rollback, source mapping and installer safety. [Agent workflow](skills/capcut-cinematic-cards/SKILL.md) · [Commands/plan](skills/capcut-cinematic-cards/references/tool.md) · [Editorial guide](skills/capcut-cinematic-cards/references/editing.md) · [MIT license](LICENSE)

@@ -92,6 +92,7 @@ Project, ảnh, tiếng, font và bản sao lưu ở local; installer chỉ tả
 
 - Đối chiếu kịch bản với đúng phiên bản footage, VIDEO đã trim/speed và lần đầu nhìn thấy nhân vật; xem đủ cả hold và trước/sau cut. Không suy thứ trong tuần từ ánh sáng hay số scene.
 - Plan mới cần evidence và review độc lập đủ mọi card trước apply. Review hình học dựng lại zoom/pan/overlay hỗ trợ; bounds không phải số đo chữ thật.
+- Có thể giữ nguyên mẫu native đã duyệt cho cả tên/vai trò, gồm rich style, bóng chữ và scale riêng của hai dòng; Codex tự chuẩn bị dữ liệu local.
 - Có preview chữ trên footage chuyển động với font đã đối chiếu theo ví dụ thật. Codex tự chuẩn bị calibration local; không bắt bạn sửa JSON. Preview ghi rõ giới hạn so với engine CapCut, không tự thu nhỏ để giấu tràn chữ.
 - Subtitle theo mẫu native được giữ editable, bảo toàn lời/timing/recognition; có thể dời/wrap đúng cue đã xem khi vướng hành động. Linked cues dùng chung material được chặn khi wrap xung đột.
 - Native fade-in/out có thể tái dùng theo cặp resource đã kiểm; hold ngắn được dùng khi có lý do và còn đủ thời gian đọc, không đặt card lấn sang cảnh trước chỉ để đạt số giây mặc định.
@@ -123,7 +124,7 @@ Xem [tham chiếu lệnh và plan](skills/capcut-cinematic-cards/references/tool
 python3 -m unittest discover -s tests -v
 ```
 
-114 test đã chạy đạt trên macOS, gồm trích hình/tiếng FFmpeg bằng media giả. Các test dùng project giả, không sửa phim thật: giữ compound/audio, mirror, tránh thoại, bằng chứng nhân vật, tùy chỉnh style, stale input, editor busy, apply/restore, ownership, installer và bảo vệ đường dẫn. CI chưa được bật; chưa tuyên bố đã chạy test trên Windows/Linux.
+122 test đã chạy đạt trên macOS, gồm trích hình/tiếng FFmpeg bằng media giả. Các test dùng project giả, không sửa phim thật: giữ compound/audio, mirror, tránh thoại, bằng chứng nhân vật, tùy chỉnh style, stale input, editor busy, apply/restore, ownership, installer và bảo vệ đường dẫn. CI chưa được bật; chưa tuyên bố đã chạy test trên Windows/Linux.
 
 [Lệnh và schema plan](skills/capcut-cinematic-cards/references/tool.md) · [Nguyên tắc chọn card và style](skills/capcut-cinematic-cards/references/editing.md)
 

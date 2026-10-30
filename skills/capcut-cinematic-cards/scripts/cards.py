@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from native_text import identity, make_text, apply_text_layout
+from native_text import identity, make_text, apply_text_layout, utf16_length
 from styles import resolve_style
 
 STATE = '.capcut-cards-state.json'
@@ -326,6 +326,104 @@ def review_manifest(card, left, right, signature, evidence, sources):
     evidence[str(path)] = digest(path)
 
 
+# Explicit native appearance only: no material/segment IDs, content, timing or positions.
+CARD_APPEARANCE_FIELDS = {
+    'font_path', 'font_name', 'font_title', 'font_size', 'font_id', 'font_resource_id',
+    'font_url', 'font_team_id', 'font_third_resource_id', 'font_category_id',
+    'font_category_name', 'font_source_platform', 'fonts',
+    'global_alpha', 'text_alpha', 'text_color', 'alignment', 'typesetting', 'text_size',
+    'initial_scale', 'letter_spacing', 'line_spacing', 'line_feed', 'use_effect_default_color',
+    'is_rich_text', 'has_shadow', 'shadow_color', 'shadow_alpha', 'shadow_smoothing',
+    'shadow_distance', 'shadow_angle', 'shadow_point', 'shadow_thickness_projection_enable',
+    'shadow_thickness_projection_angle', 'shadow_thickness_projection_distance',
+    'border_alpha', 'border_width', 'border_mode',
+    'border_color', 'bold_width', 'italic_degree', 'underline', 'background_color',
+    'background_alpha', 'background_style', 'background_round_radius', 'background_width',
+    'background_height', 'background_vertical_offset', 'background_horizontal_offset',
+    'background_fill', 'fixed_width', 'fixed_height',
+    'force_apply_line_max_width', 'line_max_width', 'inner_padding', 'check_flag',
+}
+CARD_RICH_STYLE_FIELDS = {'range', 'size', 'font', 'fill', 'letter_spacing', 'shadows',
+                          'strokes', 'bold', 'italic', 'underline', 'strikethrough'}
+
+
+def card_appearance(plan, font, evidence):
+    """Load a reviewed, hash-bound role appearance; typography/scale overrides conflict.
+
+    Only fade_seconds, positions and text_layout widths may override this appearance.
+    The font header check deliberately matches the existing native-font contract.
+    """
+    option = plan.get('card_appearance')
+    if option is None:
+        return None
+    require(isinstance(option, dict) and set(option) == {'path', 'sha256', 'review'} and
+            isinstance(option.get('review'), str) and option['review'].strip(),
+            'card_appearance needs path, sha256 and a nonempty native review')
+    require(isinstance(option.get('path'), str) and Path(option['path']).is_absolute(),
+            'card_appearance path must be absolute')
+    path = Path(option['path'])
+    require(path.is_file() and isinstance(option.get('sha256'), str) and
+            re.fullmatch(r'[a-fA-F0-9]{64}', option['sha256']) and
+            digest(path) == option['sha256'], 'card_appearance changed or hash is invalid')
+    for config in [plan, *plan.get('cards', [])]:
+        style = config.get('style', {})
+        layout = config.get('text_layout', {})
+        require(isinstance(style, dict) and isinstance(layout, dict),
+                'card_appearance conflicting style/text_layout configuration')
+        require(not font and 'font' not in config and not set(style)-{'fade_seconds'} and
+                'scale' not in layout,
+                'card_appearance conflicts with font, typography style or text_layout.scale')
+    source = read(path)
+    require(set(source) == {'version', 'layers'} and type(source.get('version')) is int and source['version'] == 1 and
+            isinstance(source.get('layers'), dict) and set(source['layers']) == {'title', 'detail'},
+            'card_appearance version 1 needs exactly title/detail layers')
+    # JSON permits NaN/Infinity in Python; reject them even in nested native fields.
+    try:
+        json.dumps(source, allow_nan=False)
+    except ValueError as exc:
+        raise ValueError('card_appearance contains nonfinite values') from exc
+    for role, layer in source['layers'].items():
+        require(isinstance(layer, dict) and set(layer) ==
+                {'appearance', 'rich_content_example', 'clip_scale', 'uniform_scale'},
+                'card_appearance layer contains unsupported fields')
+        appearance, example = layer['appearance'], layer['rich_content_example']
+        require(isinstance(appearance, dict) and not set(appearance)-CARD_APPEARANCE_FIELDS,
+                'card_appearance contains unsupported native appearance fields')
+        require(isinstance(example, dict) and set(example) == {'text', 'styles'} and
+                isinstance(example.get('text'), str) and example['text'] and
+                isinstance(example.get('styles'), list) and len(example['styles']) == 1,
+                'card_appearance needs one reviewed rich style and example text')
+        style = example['styles'][0]
+        require(isinstance(style, dict) and not set(style)-CARD_RICH_STYLE_FIELDS and
+                style.get('range') == [0, utf16_length(example['text'])],
+                'card_appearance rich style must cover the whole example in UTF-16')
+        require(number(appearance.get('font_size'), 'card_appearance font_size') > 0 and
+                number(style.get('size'), 'card_appearance rich size') == appearance['font_size'],
+                'card_appearance native and rich font sizes must match')
+        native_font = appearance.get('font_path')
+        rich_font = style.get('font')
+        require(isinstance(native_font, str) and Path(native_font).is_absolute() and
+                isinstance(rich_font, dict) and not set(rich_font)-{'path', 'id'} and
+                rich_font.get('path') == native_font and not appearance.get('fonts'),
+                'card_appearance needs matching absolute single-font paths')
+        font_path = Path(native_font)
+        require(font_path.is_file() and font_path.read_bytes()[:4] in
+                (b'\x00\x01\x00\x00', b'OTTO', b'ttcf', b'true'),
+                'card_appearance requires a readable local TTF/OTF/TTC font')
+        evidence[str(font_path)] = digest(font_path)
+        scale, uniform = layer['clip_scale'], layer['uniform_scale']
+        require(isinstance(scale, dict) and set(scale) == {'x', 'y'} and
+                all(number(scale[k], 'card_appearance clip scale') > 0 for k in ('x', 'y')),
+                'Invalid card_appearance clip_scale')
+        require(isinstance(uniform, dict) and set(uniform) == {'on', 'value'} and
+                isinstance(uniform['on'], bool) and
+                number(uniform['value'], 'card_appearance uniform scale') > 0,
+                'Invalid card_appearance uniform_scale')
+    require(digest(path) == option['sha256'], 'card_appearance changed while reading')
+    evidence[str(path)] = option['sha256']
+    return source['layers']
+
+
 def validate_plan(plan, data, signature, font, sources):
     require(plan.get('version') in (1, 2), 'Plan version must be 1 or 2')
     require(plan.get('project_sha256') == signature, 'Project changed; regenerate the plan from current inspection')
@@ -340,6 +438,7 @@ def validate_plan(plan, data, signature, font, sources):
             'The task requires native fade; opacity keyframes alone do not satisfy it')
     fps = float(data['fps'])
     evidence = {}
+    appearance = card_appearance(plan, font, evidence)
     ids = set()
     protected = plan.get('protected_ranges', [])
     require(isinstance(protected, list), 'protected_ranges must be a list')
@@ -347,8 +446,13 @@ def validate_plan(plan, data, signature, font, sources):
         start, end = number(interval['start'], 'protected start'), number(interval['end'], 'protected end')
         require(0 <= start < end <= data['duration']/1e6 and interval.get('reason'), 'Invalid protected range')
     for card in cards:
+        card.pop('_appearance', None)
+        card.pop('_appearance_font', None)
+        if appearance:
+            card['_appearance'] = copy.deepcopy(appearance)
+            card['_appearance_font'] = appearance['title']['appearance']['font_path']
         require(card.get('kind', 'time-location') in ('time', 'location', 'time-location', 'character', 'ending'), 'Unknown card kind')
-        selected_font = card.get('font') or plan.get('font') or font or card.get('_inherited_font') or choose_font()
+        selected_font = card.get('font') or plan.get('font') or font or card.get('_appearance_font') or card.get('_inherited_font') or choose_font()
         require(selected_font is not None, 'Choose an installed font with --font, plan.font or card.font')
         selected_font = Path(selected_font).expanduser().resolve()
         require(selected_font.is_file() and selected_font.read_bytes()[:4] in
@@ -704,6 +808,10 @@ def stage(project, plan, out, font, preserve_owned=False):
     for card in plan.get('cards', []):
         card.pop('_saved_hold', None)
         card.pop('_saved_positions', None)
+        card.pop('_appearance', None)
+        card.pop('_appearance_font', None)
+    require(not (preserve_owned and plan.get('card_appearance') is not None),
+            'card_appearance cannot be used with restyle/preserve_owned')
     if preserve_owned:
         saved_state = reviewed_state(original, old_state, signature, digest(project/STATE), plan)
         plan = effective_restyle_plan(plan, original, saved_state)
