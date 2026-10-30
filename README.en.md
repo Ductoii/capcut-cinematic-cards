@@ -12,16 +12,16 @@ A local Codex skill for necessary **time cards, location cards and first-appeara
 macOS/Linux, Python 3.10+:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.3/install.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.4.0/install.py | python3
 ```
 
 Windows PowerShell, Python 3.10+:
 
 ```powershell
-(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.3/install.py).Content | py -3 -
+(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.4.0/install.py).Content | py -3 -
 ```
 
-This downloads and executes the public [installer](install.py), pinned to version 0.1.3. It installs at `~/.agents/skills/capcut-cinematic-cards`. Restart Codex if discovery has not refreshed. Reinstalling backs up a previous managed install; unmanaged skills are preserved. Set `CAPCUT_CARDS_SKILLS_DIR` for another skills directory. Skill backups are stored in the sibling `capcut-cards-install-backups` folder.
+This downloads and executes the public [installer](install.py), pinned to version 0.4.0. It installs at `~/.agents/skills/capcut-cinematic-cards`. Restart Codex if discovery has not refreshed. Reinstalling backs up a previous managed install; unmanaged skills are preserved. Set `CAPCUT_CARDS_SKILLS_DIR` for another skills directory. Skill backups are stored in the sibling `capcut-cards-install-backups` folder.
 
 You can also give this repository URL to local Codex and ask it to install the skill and prepare dependencies. No Git clone or manual JSON editing is required.
 
@@ -39,13 +39,22 @@ The screenplay and character references are at: [local path or attachment].
 
 Codex discovers the project, reads the screenplay/captions, reviews source frames and audio, chooses safe placements, fills the plan, stages backups, applies and verifies. Save and close CapCut before applying: the helper refuses a running editor and never kills it. Analysis/staging can finish while the editor is open.
 
-Version **0.1.1** defaults to **name + role**: a concise established occupation or relationship, never a villain label or a future reveal. Readable native sizes 6.2/3.8 and lower-third positions -0.64/-0.77 apply to character cards, with film-specific overrides. Time/location defaults are unchanged. Names-only requests, unknown roles or spoiler-sensitive roles require a documented omission reason; the assistant must never invent a role.
+Character cards default to a name plus a concise established role. Font, size and placement follow the supplied reference and actual scene; defaults are not a visual standard for every film. Names-only, unknown or spoiler-sensitive roles need a documented omission reason.
 
 Character identities require evidence and a review of earlier scenes. Unknown identities, mystery reveals and unsuitable entrance scenes are omitted or deferred. This is editorial judgment, not guaranteed automated face recognition.
 
 Five starting themes cover heritage drama, modern thriller, documentary, intimate romance and noir. Codex chooses an installed font and can adjust color, size, spacing, position and opacity fades. No fonts are bundled. Animated tracking, moving titles, glitches, freeze frames and effect packs are outside this version. A 1.5s fade is never stretched into black just to hold a 3.4s card.
 
-## Version v0.1.3
+## Version v0.4.0
+
+- Join the correct screenplay/production version to retained VIDEO trim/speed, inspect earlier appearances and whole holds on both sides of cuts, and anchor named days to explicit story cues.
+- New plans require pinned evidence and independent review of every staged card before apply. Geometry review reconstructs supported static zoom/pan and overlays; declared rectangles are not measured glyphs.
+- Reviewed paired native appearances preserve title/detail rich styling, shadows and independent scale fields; Codex prepares and pins the local template.
+- Optional calibrated visible-text previews place the actual font over moving footage. Codex prepares private observed calibration; users do not edit JSON. Requires Pillow only for this command; it does not certify native CapCut rendering or auto-shrink overflow.
+- Native subtitle templates preserve editable words/timing/recognition. Reviewed exact-ID position/wrap overrides protect individual actions; conflicting wrapping for shared materials stops safely.
+- Reviewed native in/out resource pairs and justified short holds retain a reading plateau without starting in the wrong scene to satisfy a fixed duration.
+
+## Other capabilities
 
 - Small identifiers may appear during dialogue; reviewed simultaneous groups use separate person-associated editable labels.
 - Fonts are configurable per card. Restyles preserve omitted typography fields; explicit layout repairs synchronize scale, widths and reviewed placement. No font or visual theme is mandatory.
@@ -77,4 +86,4 @@ Ask Codex to restore a previous card run or remove only this skill when needed. 
 python3 -m unittest discover -s tests -v
 ```
 
-Tests cover original-track preservation, mirror synchronization, speech protection, character evidence, styling, stale sources, busy editor, owned updates, guarded rollback, source mapping and installer safety. [Agent workflow](skills/capcut-cinematic-cards/SKILL.md) · [Commands/plan](skills/capcut-cinematic-cards/references/tool.md) · [Editorial guide](skills/capcut-cinematic-cards/references/editing.md) · [MIT license](LICENSE)
+122 tests passed locally on macOS. Tests cover original-track preservation, mirror synchronization, speech protection, character evidence, styling, stale sources, busy editor, owned updates, guarded rollback, source mapping and installer safety. [Agent workflow](skills/capcut-cinematic-cards/SKILL.md) · [Commands/plan](skills/capcut-cinematic-cards/references/tool.md) · [Editorial guide](skills/capcut-cinematic-cards/references/editing.md) · [MIT license](LICENSE)

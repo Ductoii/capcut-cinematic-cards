@@ -1,10 +1,15 @@
 """Native editable text shapes for the unencrypted 360000 draft schema."""
 import json
 import uuid
+import copy
 
 
 def identity(project_id, role):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f'capcut-cinematic-cards/{project_id}/{role}')).upper()
+
+
+def utf16_length(text):
+    return len(text.encode('utf-16-le')) // 2
 
 
 def make_text(project_id, card, detail, font, fps):
@@ -19,7 +24,8 @@ def make_text(project_id, card, detail, font, fps):
               'feather': .08, 'distance': 2., 'content': {'solid': {'color': [0, 0, 0]}, 'render_type': 'solid'},
               'thickness_projection_enable': False, 'angle': -45}
     content = {'text': text, 'styles': [{'fill': {'content': {'solid': {'color': colour}}, 'render_type': 'solid'},
-                'range': [0, len(text)], 'size': size, 'font': {'path': str(font), 'id': ''}, 'shadows': [shadow]}]}
+                'range': [0, utf16_length(text)], 'size': size, 'font': {'path': str(font), 'id': ''},
+                'letter_spacing': style[role + '_spacing'], 'shadows': [shadow]}]}
     material = dict(id=ident, type='text', name=text, content=json.dumps(content, ensure_ascii=False, separators=(',', ':')),
                     font_path=str(font), font_name=font.stem, font_title=font.stem, font_size=size, font_id='', font_resource_id='',
                     font_url='', fonts=[], global_alpha=1., text_alpha=1., text_color=hex_color,
@@ -58,6 +64,16 @@ def make_text(project_id, card, detail, font, fps):
     for option in ('lut', 'adjust', 'hsl', 'color_curves', 'hsl_curves', 'color_wheels', 'smart_color_adjust',
                    'color_match_adjust', 'color_correct_adjust', 'adjust_mask', 'video_mask', 'mask_stroke', 'mask_shadow', 'color_adjust_pro'):
         segment['enable_' + option] = False
+    approved = card.get('_appearance', {}).get(role)
+    if approved:
+        material.update(copy.deepcopy(approved['appearance']))
+        rich_style = copy.deepcopy(approved['rich_content_example']['styles'][0])
+        rich_style['range'] = [0, utf16_length(text)]
+        material['content'] = json.dumps({'text': text, 'styles': [rich_style]},
+                                         ensure_ascii=False, separators=(',', ':'))
+        material['base_content'] = material['content']
+        segment['clip']['scale'] = copy.deepcopy(approved['clip_scale'])
+        segment['uniform_scale'] = copy.deepcopy(approved['uniform_scale'])
     apply_text_layout(material, segment, card, detail)
     return material, segment
 
@@ -78,3 +94,82 @@ def apply_text_layout(material, segment, card, detail=False):
         material['force_apply_line_max_width'] = True
     if 'fixed_width' in options:
         material['fixed_width'] = options['fixed_width']
+
+
+def restyle_subtitles(data, template, y=None, wrap_columns=None, cue_positions=None):
+    """Copy a reviewed native appearance, retaining recognition data and cue timing."""
+    source_content = json.loads(template['content'])
+    if len(source_content.get('styles', [])) != 1:
+        raise ValueError('Subtitle template must have one reviewed native style')
+    fields = {'alignment', 'typesetting', 'text_size', 'initial_scale', 'letter_spacing', 'line_spacing',
+              'line_feed', 'use_effect_default_color', 'is_rich_text', 'has_shadow', 'underline',
+              'fixed_width', 'fixed_height', 'force_apply_line_max_width', 'line_max_width',
+              'text_alpha', 'global_alpha', 'text_color', 'inner_padding', 'check_flag', 'fonts'}
+    fields.update(k for k in template if k.startswith(('font_', 'background_', 'shadow_', 'border_', 'bold_', 'italic_')))
+    result = copy.deepcopy(data)
+    materials = {m['id']: m for m in result['materials'].get('texts', [])}
+    changes = []
+    cue_positions = cue_positions or {}
+    remaining = set(cue_positions)
+    material_wraps = {}
+    for track in result['tracks']:
+        if track.get('type') != 'text':
+            continue
+        for segment in track.get('segments', []):
+            ident = segment.get('material_id')
+            if materials.get(ident, {}).get('type') == 'subtitle':
+                columns = cue_positions.get(segment['id'], {}).get('wrap_columns', wrap_columns)
+                widths = material_wraps.setdefault(ident, set())
+                widths.add(columns)
+                if len(widths) > 1:
+                    raise ValueError('Shared subtitle material has conflicting wrap widths: '+ident+
+                                     '; review all linked cues with one wrap width')
+    for track in result['tracks']:
+        if track.get('type') != 'text':
+            continue
+        for segment in track.get('segments', []):
+            material = materials.get(segment.get('material_id'), {})
+            if material.get('type') != 'subtitle':
+                continue
+            content = json.loads(material['content'])
+            old_text = content['text']
+            text = old_text
+            columns = cue_positions.get(segment['id'], {}).get('wrap_columns', wrap_columns)
+            if columns:
+                words = old_text.split(); flat = ' '.join(words)
+                if len(flat) <= columns:
+                    text = flat
+                else:
+                    options = [(' '.join(words[:i]), ' '.join(words[i:])) for i in range(1, len(words))]
+                    options = [pair for pair in options if max(map(len, pair)) <= columns]
+                    if not options:
+                        raise ValueError('Subtitle does not fit two lines at the requested wrap width; review the cue instead of truncating it')
+                    text = '\n'.join(min(options, key=lambda pair: abs(len(pair[0])-len(pair[1]))))
+            if text.split() != old_text.split():
+                raise ValueError('Subtitle wording changed')
+            for key in fields:
+                if key in template:
+                    material[key] = copy.deepcopy(template[key])
+            style = copy.deepcopy(source_content['styles'][0])
+            style['range'] = [0, len(text)]
+            content.update(text=text, styles=[style])
+            material['content'] = json.dumps(content, ensure_ascii=False, separators=(',', ':'))
+            material['base_content'] = material['content']
+            if y is not None:
+                segment['clip']['transform']['y'] = y
+            if segment['id'] in cue_positions:
+                if segment['id'] not in remaining:
+                    raise ValueError('Ambiguous native subtitle cue position: '+segment['id'])
+                position = cue_positions[segment['id']]
+                for axis in ('x', 'y'):
+                    if axis in position:
+                        segment['clip']['transform'][axis] = position[axis]
+                remaining.discard(segment['id'])
+            changes.append({'material_id': material['id'], 'segment_id': segment['id'],
+                            'before_text': old_text, 'after_text': text,
+                            'target_timerange': copy.deepcopy(segment['target_timerange'])})
+    if not changes:
+        raise ValueError('No native subtitle cues in this project')
+    if remaining:
+        raise ValueError('Unknown native subtitle cue position: '+', '.join(sorted(remaining)))
+    return result, changes
