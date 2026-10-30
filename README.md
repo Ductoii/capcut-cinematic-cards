@@ -14,18 +14,18 @@
 **Mac/Linux**, có Python 3.10 trở lên:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.3/install.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.4.0/install.py | python3
 ```
 
 **Windows PowerShell**, có Python 3.10 trở lên:
 
 ```powershell
-(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.3/install.py).Content | py -3 -
+(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.4.0/install.py).Content | py -3 -
 ```
 
 Không biết mở Terminal? Dán link repo này vào **Codex local trên máy có project**, nói: **“Cài skill này cho tôi và chuẩn bị dependency để dùng với CapCut.”** Codex có thể thực hiện lệnh cài giúp bạn. Lệnh tải và chạy mã nguồn công khai trong repo; có thể đọc [installer](install.py) trước khi chạy.
 
-Skill được cài vào `~/.agents/skills/capcut-cinematic-cards` theo [quy ước skill của Codex](https://learn.chatgpt.com/docs/build-skills). Nếu chưa xuất hiện, khởi động lại Codex. Không cần clone repo hoặc sửa JSON. Chạy lại lệnh để cài lại bản 0.1.3; bản cũ được sao lưu. Lệnh được ghim phiên bản, không tự cập nhật sang bản mới.
+Skill được cài vào `~/.agents/skills/capcut-cinematic-cards` theo [quy ước skill của Codex](https://learn.chatgpt.com/docs/build-skills). Nếu chưa xuất hiện, khởi động lại Codex. Không cần clone repo hoặc sửa JSON. Chạy lại lệnh để cài lại bản 0.4.0; bản cũ được sao lưu. Lệnh được ghim phiên bản, không tự cập nhật sang bản mới.
 
 ## Dùng ngay
 
@@ -86,9 +86,9 @@ Nhờ Codex kiểm tra/chuẩn bị phần thiếu qua terminal. Không cần t�
 
 Project, ảnh, tiếng, font và bản sao lưu ở local; installer chỉ tải skill công khai. Skill không tải media lên dịch vụ riêng. File bạn đưa vào phiên Codex vẫn chịu cách xử lý dữ liệu của phiên đó.
 
-## Giới hạn đã biết
+## Khả năng và giới hạn
 
-### Bản sửa đang thử
+### Bản v0.4.0
 
 - Đối chiếu kịch bản với đúng phiên bản footage, VIDEO đã trim/speed và lần đầu nhìn thấy nhân vật; xem đủ cả hold và trước/sau cut. Không suy thứ trong tuần từ ánh sáng hay số scene.
 - Plan mới cần evidence và review độc lập đủ mọi card trước apply. Review hình học dựng lại zoom/pan/overlay hỗ trợ; bounds không phải số đo chữ thật.
@@ -97,7 +97,7 @@ Project, ảnh, tiếng, font và bản sao lưu ở local; installer chỉ tả
 - Subtitle theo mẫu native được giữ editable, bảo toàn lời/timing/recognition; có thể dời/wrap đúng cue đã xem khi vướng hành động. Linked cues dùng chung material được chặn khi wrap xung đột.
 - Native fade-in/out có thể tái dùng theo cặp resource đã kiểm; hold ngắn được dùng khi có lý do và còn đủ thời gian đọc, không đặt card lấn sang cảnh trước chỉ để đạt số giây mặc định.
 
-### Bản v0.1.3
+### Các khả năng khác
 
 - Nhãn nhân vật có thể hiện trong thoại; hai nhãn độc lập hiện đồng thời khi đã rà vị trí đúng người và vùng subtitle.
 - Font có thể chọn theo từng card. Restyle giữ các thông số không yêu cầu đổi; có sửa scale đồng bộ, giới hạn chiều rộng, xuống dòng và bố cục có bằng chứng. Không khóa font/style cho mọi phim.
@@ -110,7 +110,7 @@ Project, ảnh, tiếng, font và bản sao lưu ở local; installer chỉ tả
 
 Xem [tham chiếu lệnh và plan](skills/capcut-cinematic-cards/references/tool.md). Các kiểm tra dữ liệu vẫn không xác nhận playback/render native CapCut.
 
-### Bản đã phát hành
+### Giới hạn
 
 - Chỉ ghi draft JSON **không mã hóa, schema `360000`**. Định dạng khác sẽ dừng; không đổi schema bằng tay để vượt kiểm tra.
 - Đường dẫn mặc định hỗ trợ tìm project macOS/Windows; có thể truyền đường dẫn chính xác. Mã xử lý file dùng Python đa nền tảng. Chạy file và media đã được kiểm tra trên macOS; chưa xác minh CapCut native trên Windows/Linux.

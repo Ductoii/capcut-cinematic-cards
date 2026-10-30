@@ -12,16 +12,16 @@ A local Codex skill for necessary **time cards, location cards and first-appeara
 macOS/Linux, Python 3.10+:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.3/install.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.4.0/install.py | python3
 ```
 
 Windows PowerShell, Python 3.10+:
 
 ```powershell
-(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.1.3/install.py).Content | py -3 -
+(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.4.0/install.py).Content | py -3 -
 ```
 
-This downloads and executes the public [installer](install.py), pinned to version 0.1.3. It installs at `~/.agents/skills/capcut-cinematic-cards`. Restart Codex if discovery has not refreshed. Reinstalling backs up a previous managed install; unmanaged skills are preserved. Set `CAPCUT_CARDS_SKILLS_DIR` for another skills directory. Skill backups are stored in the sibling `capcut-cards-install-backups` folder.
+This downloads and executes the public [installer](install.py), pinned to version 0.4.0. It installs at `~/.agents/skills/capcut-cinematic-cards`. Restart Codex if discovery has not refreshed. Reinstalling backs up a previous managed install; unmanaged skills are preserved. Set `CAPCUT_CARDS_SKILLS_DIR` for another skills directory. Skill backups are stored in the sibling `capcut-cards-install-backups` folder.
 
 You can also give this repository URL to local Codex and ask it to install the skill and prepare dependencies. No Git clone or manual JSON editing is required.
 
@@ -45,7 +45,7 @@ Character identities require evidence and a review of earlier scenes. Unknown id
 
 Five starting themes cover heritage drama, modern thriller, documentary, intimate romance and noir. Codex chooses an installed font and can adjust color, size, spacing, position and opacity fades. No fonts are bundled. Animated tracking, moving titles, glitches, freeze frames and effect packs are outside this version. A 1.5s fade is never stretched into black just to hold a 3.4s card.
 
-## Fixes under trial
+## Version v0.4.0
 
 - Join the correct screenplay/production version to retained VIDEO trim/speed, inspect earlier appearances and whole holds on both sides of cuts, and anchor named days to explicit story cues.
 - New plans require pinned evidence and independent review of every staged card before apply. Geometry review reconstructs supported static zoom/pan and overlays; declared rectangles are not measured glyphs.
@@ -54,7 +54,7 @@ Five starting themes cover heritage drama, modern thriller, documentary, intimat
 - Native subtitle templates preserve editable words/timing/recognition. Reviewed exact-ID position/wrap overrides protect individual actions; conflicting wrapping for shared materials stops safely.
 - Reviewed native in/out resource pairs and justified short holds retain a reading plateau without starting in the wrong scene to satisfy a fixed duration.
 
-## Version v0.1.3
+## Other capabilities
 
 - Small identifiers may appear during dialogue; reviewed simultaneous groups use separate person-associated editable labels.
 - Fonts are configurable per card. Restyles preserve omitted typography fields; explicit layout repairs synchronize scale, widths and reviewed placement. No font or visual theme is mandatory.
