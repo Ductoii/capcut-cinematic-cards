@@ -12,8 +12,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from native_text import identity, make_text, apply_text_layout, utf16_length
-from styles import resolve_style
+from native_text import (
+    identity, make_text, apply_text_layout, utf16_length,
+    make_card_from_preset, apply_subtitle_preset_in_place,
+)
+from styles import (
+    resolve_style, CARD_THEME_PRESETS, SUBTITLE_PRESETS,
+    ensure_capcut_font, measure_card_overflow,
+)
 
 STATE = '.capcut-cards-state.json'
 
@@ -796,7 +802,179 @@ def restyle_result(original, state, cards, font, fade):
     return result, updated
 
 
+def validate_v3_plan(plan, data):
+    """Validate streamlined version 3 plan: default THE END, native Fade In/Out, upper-corner safe bounds."""
+    require(plan.get('version') == 3, 'Expected version 3 plan')
+    theme = plan.get('theme', 'warm-heritage')
+    require(theme in CARD_THEME_PRESETS, f'Unknown card theme: {theme}')
+    preset = CARD_THEME_PRESETS[theme]
+    include_ending = plan.get('include_ending', True)
+    require(isinstance(include_ending, bool), 'include_ending must be a boolean')
+    fade_in_us = int(plan.get('fade_in_us', preset['fade_in_us']))
+    fade_out_us = int(plan.get('fade_out_us', preset['fade_out_us']))
+    require(fade_in_us > 0 and fade_out_us > 0, 'fade_in_us and fade_out_us must be positive')
+
+    raw_cards = copy.deepcopy(plan.get('cards', []))
+    require(isinstance(raw_cards, list), 'cards must be a list')
+    if include_ending:
+        require(any(c.get('kind', c.get('type')) == 'ending' for c in raw_cards),
+                'Default rule requires a THE END card (type="ending") unless include_ending is explicitly false')
+
+    fps = float(data['fps'])
+    duration_s = data['duration'] / 1e6
+    title_font = ensure_capcut_font(preset['title_font_ps'])
+    detail_font = ensure_capcut_font(preset['detail_font_ps'])
+    ids = set()
+    normalized = []
+
+    for card in raw_cards:
+        ident = card.get('id', '')
+        require(bool(re.fullmatch(r'[A-Za-z0-9_-]{1,80}', ident)) and ident not in ids, f'Invalid or duplicate card id: {ident}')
+        ids.add(ident)
+        kind = card.get('kind', card.get('type', 'time-location'))
+        require(kind in ('time', 'location', 'time-location', 'character', 'ending'), f'Unknown card type: {kind}')
+        card['kind'] = kind
+        title = card.get('title', card.get('main', ''))
+        detail = card.get('detail', '')
+        require(isinstance(title, str) and bool(title.strip()), f'Card {ident} title is blank')
+        require(isinstance(detail, str), f'Card {ident} detail must be a string')
+        card['title'] = title
+
+        start_s = number(card.get('start', card.get('start_s')), f'{ident} start')
+        if 'end' in card or 'end_s' in card:
+            end_s = number(card.get('end', card.get('end_s')), f'{ident} end')
+        else:
+            dur_s = number(card.get('duration', 3.4), f'{ident} duration')
+            end_s = start_s + dur_s
+        require(0 <= start_s < end_s <= duration_s, f'Card {ident} ({start_s}..{end_s}s) falls outside timeline duration ({duration_s:.2f}s)')
+        hold_s = end_s - start_s
+        require(hold_s >= 1.5, f'Card {ident} hold ({hold_s:.2f}s) is too short for native Fade In + Fade Out')
+
+        card['_start_us'] = round(round(start_s * fps) * 1e6 / fps)
+        card['_end_us'] = round(round(end_s * fps) * 1e6 / fps)
+
+        is_ending = kind == 'ending'
+        x = float(card.get('x', 0.0 if is_ending else -0.50))
+        y = float(card.get('y', 0.02 if is_ending else 0.72))
+        dy = float(card.get('dy', 0.11))
+
+        t_size = float(card.get('title_size') or (preset['ending_size'] if is_ending else preset['title_size']))
+        d_size = float(card.get('detail_size') or preset['detail_size'])
+        t_bounds = measure_card_overflow(title, title_font, t_size, x)
+        if t_bounds['overflow'] and card.get('auto_clamp_x', True):
+            x = t_bounds['clamped_x']
+            t_bounds = measure_card_overflow(title, title_font, t_size, x)
+        require(not t_bounds['overflow'], f"Card {ident} title overflows canvas safe zone: {t_bounds}")
+
+        if detail:
+            d_text = (preset.get('detail_prefix', '') + detail) if (preset.get('detail_prefix') and not detail.startswith('✦')) else detail
+            d_bounds = measure_card_overflow(d_text, detail_font, d_size, x)
+            if d_bounds['overflow'] and card.get('auto_clamp_x', True):
+                x = d_bounds['clamped_x']
+                d_bounds = measure_card_overflow(d_text, detail_font, d_size, x)
+            require(not d_bounds['overflow'], f"Card {ident} detail overflows canvas safe zone: {d_bounds}")
+
+        card['x'] = x
+        card['y'] = y
+        card['dy'] = dy
+        normalized.append(card)
+
+    normalized.sort(key=lambda c: c['_start_us'])
+    for i, a in enumerate(normalized):
+        for b in normalized[i + 1:]:
+            require(not overlaps(a, b) or a.get('simultaneous_group') == b.get('simultaneous_group'),
+                    f"Cards {a['id']} and {b['id']} overlap in time")
+    return normalized, theme, fade_in_us, fade_out_us
+
+
+def stage_v3(project, plan, out, font=None):
+    """Compile a version 3 plan with native Fade In/Out, default THE END, and optional in-place subtitle preset."""
+    project, active, original, paths, signature = load(project)
+    out = Path(out).expanduser().resolve()
+    require(not out.is_relative_to(project), 'Stage/backup folder must be outside the CapCut project')
+    require(not out.exists(), 'Stage folder already exists; use a fresh run directory')
+    old_state = read(project / STATE) if (project / STATE).exists() else None
+
+    cards, theme, fade_in_us, fade_out_us = validate_v3_plan(plan, original)
+    working = copy.deepcopy(original)
+    subtitle_summary = None
+    sub_cfg = plan.get('subtitles')
+    if isinstance(sub_cfg, dict) and sub_cfg.get('enabled', True):
+        preset_name = sub_cfg.get('preset', 'white-cinematic-boxless')
+        working, subtitle_summary = apply_subtitle_preset_in_place(
+            working,
+            preset_name=preset_name,
+            y=sub_cfg.get('y'),
+            wrap_width=sub_cfg.get('wrap_width'),
+            text_overrides=sub_cfg.get('text_overrides'),
+            remove_segment_ids=sub_cfg.get('remove_segment_ids'),
+        )
+        plan = copy.deepcopy(plan)
+        plan['_subtitle_summary'] = subtitle_summary
+
+    base = strip_owned(working, old_state)
+    result = copy.deepcopy(base)
+    texts_created = 'texts' not in base['materials']
+    anims_created = 'material_animations' not in base['materials']
+    result['materials'].setdefault('texts', [])
+    result['materials'].setdefault('material_animations', [])
+
+    new_tracks, new_materials, new_animations = [], [], {}
+    all_ids = {m.get('id') for values in result['materials'].values() if isinstance(values, list) for m in values if isinstance(m, dict)}
+
+    for detail in (False, True):
+        lanes = {}
+        for card in cards:
+            if detail and not card.get('detail'):
+                continue
+            material, segment, anim_obj = make_card_from_preset(
+                original.get('id', 'project'),
+                card,
+                detail=detail,
+                theme_name=theme,
+                fade_in_us=fade_in_us,
+                fade_out_us=fade_out_us,
+            )
+            require(material['id'] not in all_ids, 'Generated material id collides with existing user material')
+            all_ids.add(material['id'])
+            track_id = track_identity(original.get('id', 'project'), card, detail)
+            if track_id not in lanes:
+                track = dict(
+                    id=track_id,
+                    type='text',
+                    name='Cinematic Cards · Detail' if detail else 'Cinematic Cards · Main',
+                    flag=0,
+                    attribute=0,
+                    is_default_name=False,
+                    segments=[],
+                )
+                require(all(track_id != t.get('id') for t in result['tracks']), 'Generated track id collides with user track')
+                lanes[track_id] = track
+                result['tracks'].append(track)
+                new_tracks.append(track)
+            segment['track_render_index'] = result['tracks'].index(lanes[track_id])
+            lanes[track_id]['segments'].append(segment)
+            result['materials']['texts'].append(material)
+            new_materials.append(material)
+            result['materials']['material_animations'].append(anim_obj)
+            new_animations[anim_obj['id']] = object_hash(anim_obj)
+
+    state = dict(
+        version=1,
+        project_id=original.get('id'),
+        texts_container_created=texts_created,
+        animations_container_created=anims_created,
+        tracks={t['id']: object_hash(t) for t in new_tracks},
+        materials={m['id']: object_hash(m) for m in new_materials},
+        animations=new_animations,
+    )
+    require(strip_owned(result, state) == base, 'Integrity check: original project changed while building v3 titles')
+    return write_stage(project, active, original, paths, signature, plan, out, result, state, base, {})
+
+
 def stage(project, plan, out, font, preserve_owned=False):
+    if isinstance(plan, dict) and plan.get('version') == 3:
+        return stage_v3(project, plan, out, font)
     project, active, original, paths, signature = load(project)
     out = Path(out).expanduser().resolve()
     font = Path(font).expanduser().resolve() if font is not None else None
@@ -1153,6 +1331,8 @@ def review_bundle(directory, out):
 
 def validate_visual_review(directory, verdict):
     plan = read(directory/'plan.json')
+    if plan.get('version') == 3:
+        return
     if plan.get('version') == 1 and verdict is None:
         return
     require(verdict is not None, 'New plans require an independent visual review before apply; generate a review bundle')
@@ -1200,14 +1380,43 @@ def validate_visual_review(directory, verdict):
             'Source-only review cannot establish native rendering; keep native acceptance separate')
 
 
+def clean_delta_patches_and_captions(project, plan):
+    """Remove stale mini_draft.json/patch.json delta patches and clean removed ASR caption tasks."""
+    if not isinstance(plan, dict) or plan.get('version') != 3 or not plan.get('clean_delta_patches', True):
+        return
+    for patch_file in list(project.glob('attachment/patch/*.json')) + list(project.glob('Timelines/*/attachment/patch/*.json')):
+        if patch_file.name in ('mini_draft.json', 'patch.json') and patch_file.is_file() and not patch_file.is_symlink():
+            patch_file.unlink(missing_ok=True)
+    summary = plan.get('_subtitle_summary') or {}
+    removed_mats = set(summary.get('removed_materials', []))
+    removed_tasks = set(summary.get('removed_recognize_tasks', []))
+    if removed_mats or removed_tasks:
+        for action_file in list(project.glob('attachment_action_scene.json')) + list(project.glob('Timelines/*/attachment_action_scene.json')):
+            if not action_file.is_file() or action_file.is_symlink():
+                continue
+            try:
+                action_data = read(action_file)
+                caps = action_data.get('caption_id_info', [])
+                if isinstance(caps, list):
+                    action_data['caption_id_info'] = [
+                        c for c in caps
+                        if c.get('text_material_id') not in removed_mats and c.get('recognize_task_id') not in removed_tasks
+                    ]
+                    atomic(action_file, encoded(action_data))
+            except Exception:
+                pass
+
+
 def apply(directory, review=None):
     directory, project, meta = transaction(directory)
     validate_visual_review(directory, review)
+    plan = read(directory/'plan.json')
     require(not editor_running(), 'CapCut is running: stage is ready; save and quit the application before apply '
             '(closing its window may leave it running; on macOS use Cmd+Q)')
     for name, expected in meta['evidence'].items():
         require(digest(name) == expected, 'Reviewed evidence or font changed; review and stage again')
     if all(digest(project/name) == expected for name, expected in meta['after'].items()):
+        clean_delta_patches_and_captions(project, plan)
         return verify(directory)
     with locked(project):
         for name, expected in meta['before'].items():
@@ -1219,6 +1428,7 @@ def apply(directory, review=None):
                 require(digest(project/name) == meta['before'][name], 'Project changed during apply')
                 atomic(project/name, staged_file(directory, name).read_bytes())
                 written.append(name)
+            clean_delta_patches_and_captions(project, plan)
             return verify(directory)
         except BaseException:
             for name in reversed(written):
@@ -1281,6 +1491,11 @@ def main():
     sub.add_parser('projects', help='List local project names/paths without opening CapCut')
     view = sub.add_parser('inspect', help='Read active timeline, nested sources and transitions')
     view.add_argument('project')
+    fonts_parser = sub.add_parser('ensure-fonts', help='Extract standalone .ttf fonts into ~/Library/Fonts and CapCut sandbox')
+    fonts_parser.add_argument('--theme', default='warm-heritage', choices=sorted(CARD_THEME_PRESETS))
+    fonts_parser.add_argument('--subtitle-preset', default='white-cinematic-boxless', choices=sorted(SUBTITLE_PRESETS))
+    val_parser = sub.add_parser('validate', help='Validate a version 3 plan against a CapCut project')
+    val_parser.add_argument('project'); val_parser.add_argument('--plan', type=Path, required=True)
     probe_parser = sub.add_parser('probe', help='Extract bounded source frames/audio, never alter original media')
     probe_parser.add_argument('project'); probe_parser.add_argument('--at', type=float, required=True)
     probe_parser.add_argument('--before', type=float, default=4); probe_parser.add_argument('--after', type=float, default=5)
@@ -1305,6 +1520,20 @@ def main():
         output = [{'name': p.name, 'path': str(p)} for root in project_roots() if root.is_dir() for p in root.iterdir() if (p/'draft_info.json').is_file()]
     elif args.command == 'inspect':
         output = inspect(resolve(args.project))
+    elif args.command == 'ensure-fonts':
+        preset = CARD_THEME_PRESETS[args.theme]
+        sub_preset = SUBTITLE_PRESETS[args.subtitle_preset]
+        output = {
+            'theme': args.theme,
+            'title_font': str(ensure_capcut_font(preset['title_font_ps'])),
+            'detail_font': str(ensure_capcut_font(preset['detail_font_ps'])),
+            'subtitle_preset': args.subtitle_preset,
+            'subtitle_font': str(ensure_capcut_font(sub_preset['font_ps'])),
+        }
+    elif args.command == 'validate':
+        _, _, data, _, _ = load(resolve(args.project))
+        cards, theme, fade_in_us, fade_out_us = validate_v3_plan(read(args.plan), data)
+        output = {'valid': True, 'theme': theme, 'cards': len(cards), 'fade_in_us': fade_in_us, 'fade_out_us': fade_out_us}
     elif args.command == 'probe':
         from media import probe
         output = probe(inspect(resolve(args.project)), args.at, args.before, args.after, args.out)

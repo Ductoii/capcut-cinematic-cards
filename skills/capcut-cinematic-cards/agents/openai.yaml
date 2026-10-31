@@ -1,6 +1,4 @@
 interface:
-  display_name: "CapCut Cinematic Cards"
-  short_description: "Time, location and character cards for local CapCut"
-  default_prompt: "Use $capcut-cinematic-cards to add necessary time, location and first-appearance character name-and-role cards, matching this film and preserving its compound clips and dialogue."
-policy:
-  allow_implicit_invocation: true
+  display_name: "CapCut Cinematic Cards & Subtitles"
+  short_description: "Film-matched story-jump title cards, native Fade In/Out, default THE END, and zero-drift in-place subtitles for CapCut macOS drafts"
+  default_prompt: "Use $capcut-cinematic-cards to check required intake (script, card style, subtitle reference image), place story-jump location/time/character cards and THE END with native CapCut Fade In/Out, and style native CapCut subtitles in-place."

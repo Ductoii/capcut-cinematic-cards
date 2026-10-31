@@ -1,131 +1,70 @@
-# CapCut Cinematic Cards
+# CapCut Cinematic Cards & Subtitles (`v0.5.0`)
 
-**Cân âm thanh dùng tool riêng:** [CapCut Audio](https://github.com/Ductoii/capcut-audio), chạy local bằng thuật toán, không cần Codex. Repo này chỉ giữ skill card độc lập.
+Language: **Tiếng Việt** | [English](README.en.md)
 
+Skill dành cho Agent AI để thiết kế và gắn **thẻ chữ điện ảnh (Location / Time / Character / THE END)** cùng **phụ đề chuẩn phim (Cinematic Subtitles)** trực tiếp vào bản nháp CapCut trên máy (`draft_info.json`), dựa trên quy trình thực chiến đã kiểm chứng qua các dự án `1026`, `1029`, `1014`, `1030`.
 
-**Bảo Codex thêm time card, location card và giới thiệu nhân vật cho phim CapCut — giữ nguyên clip ghép.**
+---
 
-[English](README.en.md) · [Hướng dẫn dành cho Codex](skills/capcut-cinematic-cards/SKILL.md) · [MIT](LICENSE)
+## Điểm cốt lõi của chuẩn `v0.5.0`
 
-Đây là **skill + công cụ Python chạy local**. Codex đọc phim/kịch bản, chọn chỗ cần chữ và cách trình bày; công cụ tạo text có thể sửa trong CapCut, sao lưu và kiểm tra dữ liệu. Không cần Computer Use, MCP hay API key riêng. Dùng model của phiên Codex hiện tại.
+1. **Mandatory Intake khi yêu cầu chưa rõ**:
+   Khi người dùng chỉ yêu cầu ngắn gọn (ví dụ: *"tạo card cho prj abc"*), Agent **bắt buộc hỏi lại 3 thông tin** trước khi chạy:
+   - **Kịch bản (`Screenplay / Script`)** *(bắt buộc)* — để lấy đúng tên nhân vật, tuổi, vai trò, địa điểm và các mốc nhảy thời gian.
+   - **Phong cách Card mong muốn (`Card Style`)** *(không truyền thì tự động điều chỉnh font + bảng màu theo thể loại kịch bản: `warm-heritage`, `southern-copper`, `christmas-hearth`, `modern-thriller`)*.
+   - **Ảnh mẫu Subtitle (`Subtitle Reference Image`)** *(không truyền thì mặc định dùng chuẩn **Trắng Điện Ảnh Không Khung Xám** `white-cinematic-boxless`: `#FFFDF8`, `Menlo-Regular.ttf`, `size = 4.2`, `y = -0.74`, `check_flag = 15`, có viền đen mảnh + đổ bóng)*.
 
-## Cài một dòng
+2. **Mặc định luôn làm `THE END`**:
+   - Tự động đặt thẻ `THE END` ở cảnh kết phim (`type = "ending"`), trừ khi người dùng dặn rõ không làm `THE END` (`include_ending: false`).
 
-**Mac/Linux**, có Python 3.10 trở lên:
+3. **Mặc định mọi Card đều có Native `Fade In` + `Fade Out`**:
+   - Tất cả thẻ (`Main`, `Detail`, `THE END`) đều gắn sẵn hiệu ứng gốc của CapCut trong `materials.material_animations`:
+     - **Fade In**: `id = "6724916044072227332"` (`0.7s` = `700,000 us`)
+     - **Fade Out**: `id = "6724919382104871427"` (`0.5s` = `500,000 us`)
+   - Giữ `common_keyframes = []` để người dùng có thể chỉnh trực tiếp trong tab `Animation -> In/Out` của CapCut.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.4.0/install.py | python3
-```
+4. **Không phụ thuộc vào mờ đen (`Fade In / Fade Out`) trên timeline CapCut**:
+   - Đặt thẻ Thời gian / Địa điểm theo **bước nhảy thời gian và bối cảnh thực tế trong kịch bản** (`30 YEARS LATER — CHRISTMAS DAY`, `CHRISTMAS EVE — 11:45 PM`, `TEN YEARS LATER...`), tuyệt đối không lấy hiệu ứng mờ đen trên timeline làm mốc duy nhất.
 
-**Windows PowerShell**, có Python 3.10 trở lên:
+5. **Tự động tách Font `.ttc -> .ttf` vào CapCut Sandbox Container & Chỉnh phụ đề In-Place (0ms lệch nhịp)**:
+   - Tự động tách mặt chữ từ `.ttc` của macOS (`Menlo.ttc`, `Seravek.ttc`, `Baskerville.ttc`, `Optima.ttc`, `Avenir Next.ttc`, `Didot.ttc`) thành file `.ttf` độc lập trong cả `~/Library/Fonts/` và `~/Library/Containers/com.lemon.lvoverseas/Data/Library/Fonts/`.
+   - Chỉnh style phụ đề **in-place** ngay trên track Auto-Caption của CapCut (`target_timerange` giữ nguyên 100%, không lệch nhịp ở cuối phim), đồng bộ `content == base_content`, sửa lỗi chính tả ASR theo kịch bản và xoá các file delta patch (`mini_draft.json`, `patch.json`).
 
-```powershell
-(Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.4.0/install.py).Content | py -3 -
-```
+---
 
-Không biết mở Terminal? Dán link repo này vào **Codex local trên máy có project**, nói: **“Cài skill này cho tôi và chuẩn bị dependency để dùng với CapCut.”** Codex có thể thực hiện lệnh cài giúp bạn. Lệnh tải và chạy mã nguồn công khai trong repo; có thể đọc [installer](install.py) trước khi chạy.
+## Cài đặt nhanh (`v0.5.0`)
 
-Skill được cài vào `~/.agents/skills/capcut-cinematic-cards` theo [quy ước skill của Codex](https://learn.chatgpt.com/docs/build-skills). Nếu chưa xuất hiện, khởi động lại Codex. Không cần clone repo hoặc sửa JSON. Chạy lại lệnh để cài lại bản 0.4.0; bản cũ được sao lưu. Lệnh được ghim phiên bản, không tự cập nhật sang bản mới.
-
-## Dùng ngay
-
-Mở chat Codex trên máy có CapCut/project rồi gửi:
-
-```text
-$capcut-cinematic-cards
-Thêm time card và location card thực sự cần thiết cho project “Tên project”.
-Thêm tên và vai trò ngắn cho nhân vật chính ở lần xuất hiện đầu tiên có thể xác nhận.
-Chọn kiểu chữ cinematic phù hợp với chất phim, ưu tiên các đoạn chuyển mờ đen.
-Không che cảnh quan trọng, mặt, phản ứng hay thoại; không động vào clip ghép của tôi.
-Không computer use. Kịch bản và reference nhân vật ở: [đường dẫn hoặc file tôi gửi].
-```
-
-Thay tên project/nguồn bằng thông tin của bạn trong **tin nhắn**, hoặc gửi thẳng đường dẫn project. Bạn không phải tạo plan, chọn timestamp, sửa file draft hay viết code; Codex làm các bước đó. Nếu bạn không cần giới thiệu nhân vật, bỏ câu đó khỏi yêu cầu.
-
-Nếu đã biết hướng mỹ thuật, nói thêm, ví dụ:
-
-- “Drama gia đình cổ điển: serif màu ngà, chữ kín đáo, fade chậm.”
-- “Thriller hiện đại: sans gọn, trắng lạnh, nhịp hiện dứt khoát.”
-- “Phim tài liệu: chữ trung tính, ưu tiên đọc rõ và thông tin.”
-- “Tình cảm: serif mềm, màu ấm, hiệu ứng nhẹ.”
-
-Card nhân vật mặc định có tên + vai trò đã được xác lập. Cỡ chữ, font và vị trí được chọn theo reference và từng cảnh; các con số mặc định không phải tiêu chuẩn thẩm mỹ cho mọi phim.
-
-Codex lựa font có sẵn trên máy, màu, cỡ, khoảng cách, vị trí và thời gian fade theo phim. Có 5 điểm xuất phát: drama, thriller, tài liệu, tình cảm, noir; có thể tùy chỉnh từng card trong cùng hệ thống. Bản này tạo typography, bóng nhẹ và opacity fade; chưa có glitch, tracking động, freeze frame hay effect pack.
-
-## Giới thiệu nhân vật có khả thi không?
-
-**Có**, khi xác nhận được nhân vật và lần xuất hiện đầu. Codex đối chiếu kịch bản/reference, rà các cảnh trước đó rồi đặt tên ở khoảnh khắc yên sau khi người xem nhận ra nhân vật. Mặc định có **tên + vai trò ngắn** (nghề nghiệp hoặc quan hệ đã được xác lập), chữ vai trò nhỏ hơn tên nhưng vẫn đọc rõ. Không gắn nhãn phản diện hay tiết lộ tương lai của nhân vật. Nếu bạn chỉ muốn tên, vai trò chưa rõ hoặc có nguy cơ spoil, Codex ghi lý do và bỏ riêng dòng vai trò.
-
-Không đoán tên từ khuôn mặt, không spoil người đang được giấu danh tính, không giới thiệu mọi nhân vật phụ. Nếu đoạn ra mắt có thoại hoặc phản ứng quan trọng, dời trong cùng cảnh hoặc bỏ card. Đây là lựa chọn biên tập của Codex dựa trên bằng chứng, không phải công cụ tự nhận diện khuôn mặt chính xác tuyệt đối.
-
-## Chuẩn bị trên máy khác
-
-| Cần có | Để làm gì |
-|---|---|
-| Codex local có quyền đọc file và chạy terminal | Phân tích, chọn card và gọi công cụ |
-| Python 3.10+ | Cài và chỉnh dữ liệu project, chỉ dùng thư viện chuẩn |
-| Pillow, chỉ khi dựng preview có chữ | Codex chuẩn bị trong môi trường Python local; lệnh chỉnh draft không phụ thuộc Pillow |
-| FFmpeg + ffprobe trên PATH | Trích khung hình/âm thanh quanh vị trí dự kiến |
-| Project CapCut local và media gốc còn truy cập được | Đọc timeline, xem cảnh, nghe thoại |
-| Kịch bản/caption/reference có thể xác minh | Xác định thời gian, địa điểm và nhân vật |
-| Font local hỗ trợ ngôn ngữ của phim | Hiển thị chữ đúng; repo không kèm font |
-
-Nhờ Codex kiểm tra/chuẩn bị phần thiếu qua terminal. Không cần tài khoản dịch vụ nhận diện hay key trả phí khác. Một phiên chat cloud không truy cập được file trên máy sẽ không thể xử lý project local.
-
-**Lưu và đóng CapCut trước khi áp dụng.** Codex có thể phân tích và tạo bản chờ trước; công cụ sẽ từ chối ghi nếu editor đang chạy, không tự kill app. Nếu có thay đổi chưa lưu, phải lưu an toàn trước khi tiếp tục.
-
-## Bảo vệ phim đang dựng
-
-- Chỉ thêm các track text riêng bên ngoài compound clip; giữ nguyên clip ghép, âm thanh, thời lượng và chuyển cảnh gốc.
-- Chọn card cần thiết. Mặc định khoảng 3.2–3.6 giây, không ép chữ vào fade 1.5 giây bằng cách kéo màn đen che cảnh.
-- Xem vùng trước/sau và toàn thời gian chữ hiện; tránh mặt, bàn tay, đồ vật, phụ đề, thoại và các phản ứng quan trọng.
-- Sao lưu bên ngoài project trước khi ghi. Kiểm tra hash, dữ liệu gốc và các mirror của timeline; chặn ghi đè khi project đã thay đổi.
-- Chạy lại chỉ thay card do skill quản lý chính xác. Nếu bạn hoặc CapCut đã sửa/chuẩn hóa chúng, công cụ dừng để Codex đối chiếu, không ép ghi đè.
-- Có khôi phục có kiểm tra. Bảo Codex: **“Khôi phục lần thêm card vừa rồi từ bản sao lưu, giữ các thay đổi tôi làm sau đó.”** Nếu xung đột, công cụ giữ thay đổi mới và báo rõ; không hứa rollback tự động mọi tình huống.
-
-Project, ảnh, tiếng, font và bản sao lưu ở local; installer chỉ tải skill công khai. Skill không tải media lên dịch vụ riêng. File bạn đưa vào phiên Codex vẫn chịu cách xử lý dữ liệu của phiên đó.
-
-## Khả năng và giới hạn
-
-### Bản v0.4.0
-
-- Đối chiếu kịch bản với đúng phiên bản footage, VIDEO đã trim/speed và lần đầu nhìn thấy nhân vật; xem đủ cả hold và trước/sau cut. Không suy thứ trong tuần từ ánh sáng hay số scene.
-- Plan mới cần evidence và review độc lập đủ mọi card trước apply. Review hình học dựng lại zoom/pan/overlay hỗ trợ; bounds không phải số đo chữ thật.
-- Có thể giữ nguyên mẫu native đã duyệt cho cả tên/vai trò, gồm rich style, bóng chữ và scale riêng của hai dòng; Codex tự chuẩn bị dữ liệu local.
-- Có preview chữ trên footage chuyển động với font đã đối chiếu theo ví dụ thật. Codex tự chuẩn bị calibration local; không bắt bạn sửa JSON. Preview ghi rõ giới hạn so với engine CapCut, không tự thu nhỏ để giấu tràn chữ.
-- Subtitle theo mẫu native được giữ editable, bảo toàn lời/timing/recognition; có thể dời/wrap đúng cue đã xem khi vướng hành động. Linked cues dùng chung material được chặn khi wrap xung đột.
-- Native fade-in/out có thể tái dùng theo cặp resource đã kiểm; hold ngắn được dùng khi có lý do và còn đủ thời gian đọc, không đặt card lấn sang cảnh trước chỉ để đạt số giây mặc định.
-
-### Các khả năng khác
-
-- Nhãn nhân vật có thể hiện trong thoại; hai nhãn độc lập hiện đồng thời khi đã rà vị trí đúng người và vùng subtitle.
-- Font có thể chọn theo từng card. Restyle giữ các thông số không yêu cầu đổi; có sửa scale đồng bộ, giới hạn chiều rộng, xuống dòng và bố cục có bằng chứng. Không khóa font/style cho mọi phim.
-
-- `probe` xử lý rõ đuôi video ngắn hơn audio/container dưới một frame, ghi timestamp mẫu thực tế và cảnh báo; không che một trim sai dài hơn bằng cách lặp hình. Xuất JPEG có pixel format tương thích.
-- `restyle` giữ chữ, vị trí, timing, keyframe, hiệu ứng và các trường CapCut đã chuẩn hóa. Khi hash đã đổi, Codex phải đối chiếu bản nháp trước và ghi nhận xét với hash hiện tại; không cập nhật ownership trước khi ghi.
-- Rà đủ nhân vật chính bằng `character_review`, hỗ trợ thẻ cho cặp nhân vật, ghi lý do cho từng người bỏ qua. Thẻ bối cảnh ưu tiên bám fade gốc; fade ngắn có thể nối chữ sang cảnh sau mà không kéo đen.
-- Có thể tái dùng fade-in native đã có và đã được xác minh ở local, đồng bộ cả tên và vai trò; không tự tải hoặc bịa ID effect. `ending` dành cho chữ kết trên hình cuối có sẵn.
-- Khi CapCut còn chạy nền, hướng dẫn lưu rồi thoát hẳn ứng dụng; trên macOS dùng Cmd+Q.
-
-Xem [tham chiếu lệnh và plan](skills/capcut-cinematic-cards/references/tool.md). Các kiểm tra dữ liệu vẫn không xác nhận playback/render native CapCut.
-
-### Giới hạn
-
-- Chỉ ghi draft JSON **không mã hóa, schema `360000`**. Định dạng khác sẽ dừng; không đổi schema bằng tay để vượt kiểm tra.
-- Đường dẫn mặc định hỗ trợ tìm project macOS/Windows; có thể truyền đường dẫn chính xác. Mã xử lý file dùng Python đa nền tảng. Chạy file và media đã được kiểm tra trên macOS; chưa xác minh CapCut native trên Windows/Linux.
-- Hỗ trợ map compound lồng, trim và tốc độ cố định. Reverse, loop, curve speed và compound ngoài chưa được map; Codex phải bỏ/defer vị trí thiếu bằng chứng.
-- Khung hình nguồn thô chưa compositing. Review dựng lại static zoom/pan và một số overlay; preview chữ có calibration riêng. Geometry/effects chưa hỗ trợ được từ chối hoặc ghi rõ giới hạn; các hình này không chứng minh engine CapCut hiển thị giống hệt.
-- Kiểm tra file thành công chứng minh dữ liệu gốc được giữ, **không chứng minh CapCut đã render/playback đúng**. Skill phải nói rõ trạng thái này. Không có renderer CapCut hoặc thao tác GUI đi kèm.
-
-## Cho người phát triển
+### macOS / Linux
 
 ```bash
-python3 -m unittest discover -s tests -v
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.5.0/install.py | python3
 ```
 
-122 test đã chạy đạt trên macOS, gồm trích hình/tiếng FFmpeg bằng media giả. Các test dùng project giả, không sửa phim thật: giữ compound/audio, mirror, tránh thoại, bằng chứng nhân vật, tùy chỉnh style, stale input, editor busy, apply/restore, ownership, installer và bảo vệ đường dẫn. CI chưa được bật; chưa tuyên bố đã chạy test trên Windows/Linux.
+---
 
-[Lệnh và schema plan](skills/capcut-cinematic-cards/references/tool.md) · [Nguyên tắc chọn card và style](skills/capcut-cinematic-cards/references/editing.md)
+## Các Preset dựng sẵn
 
-Thư mục cài có thể đổi bằng biến `CAPCUT_CARDS_SKILLS_DIR`. Installer giữ nguyên skill không thuộc quyền quản lý của nó. Bản sao skill cũ ở `capcut-cards-install-backups` bên cạnh thư mục `skills`. Muốn gỡ, bảo Codex gỡ riêng skill này; project và backup phim không nằm trong thư mục cài.
+### Phong cách Card (`theme`)
+| Preset | Font Chính (`Main` / `THE END`) | Màu Chính | Font Phụ (`Detail`) | Màu Phụ | Phù hợp với |
+|---|---|---|---|---|---|
+| `warm-heritage` | `Didot-Bold` | `#F6EFE2` (Warm Cream) | `AvenirNext-DemiBold` | `#E5B869` (Burnished Gold) | Phim gia đình, tâm lý, di sản (`1026`, `1014`) |
+| `southern-copper` | `Baskerville-SemiBold` | `#FAF3E6` (Warm Ivory) | `AvenirNext-Medium` | `#E0A958` (Amber Gold) | Phim miền Nam, hoài niệm, quê hương (`1029`) |
+| `christmas-hearth` | `Baskerville-Bold` | `#FCE8B2` (Candlelight Gold) | `Optima-Bold` (`✦  `) | `#F4F7EE` (Frosted Cream) | Phim Giáng sinh, mùa đông (`1030`) |
+| `modern-thriller` | `AvenirNext-Bold` | `#F2F5F8` (Ice White) | `Menlo-Bold` | `#D9A441` (Steel Amber) | Phim hình sự, điều tra, hiện đại |
+
+### Phong cách Phụ đề (`subtitles.preset`)
+| Preset | Font | Size | Màu chữ | Vị trí `y` | Khung nền (`check_flag`) |
+|---|---|---|---|---|---|
+| `white-cinematic-boxless` *(Mặc định)* | `Menlo-Regular.ttf` | `4.2` | `#FFFDF8` | `-0.74` | Không khung (`check_flag = 15`), viền đen `0.016` + bóng |
+| `yellow-cinema-boxless` | `Seravek-Medium.ttf` | `4.4` | `#E5CE6E` | `-0.78` | Không khung (`check_flag = 15`), viền đen `0.012` + bóng |
+| `boxed-monospaced` | `Menlo-Regular.ttf` | `4.1` | `#FFFDF8` | `-0.74` | Khung tối bo góc (`check_flag = 23`, `offset = 0.0, 0.0`) |
+
+---
+
+## Cấu trúc thư mục
+
+- [`skills/capcut-cinematic-cards/SKILL.md`](skills/capcut-cinematic-cards/SKILL.md) — Quy trình vận hành đầy đủ cho Agent.
+- [`skills/capcut-cinematic-cards/references/editing.md`](skills/capcut-cinematic-cards/references/editing.md) — Tiêu chuẩn thiết kế Card, vị trí góc trên (`y > 0`), kiểm tra cắt cảnh (`scdet`) và chống tràn lề (`PIL.ImageFont`).
+- [`skills/capcut-cinematic-cards/references/subtitle-layout.md`](skills/capcut-cinematic-cards/references/subtitle-layout.md) — Kiến trúc phụ đề in-place, bitmask `check_flag`, tách font `.ttc -> .ttf` trong CapCut Sandbox.
+- [`skills/capcut-cinematic-cards/references/tool.md`](skills/capcut-cinematic-cards/references/tool.md) — Hướng dẫn CLI & schema `version: 3`.
+- [`skills/capcut-cinematic-cards/scripts/`](skills/capcut-cinematic-cards/scripts/) — Bộ công cụ Python (`cards.py`, `styles.py`, `native_text.py`, `media.py`, `preview.py`).
