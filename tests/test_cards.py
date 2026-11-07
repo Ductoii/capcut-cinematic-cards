@@ -1,895 +1,183 @@
-import copy
-import importlib.util
 import json
 import pathlib
 import sys
-import tempfile
 import unittest
-from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / 'skills/capcut-cinematic-cards/scripts/cards.py'
-
-
-def load_tool():
-    if not SCRIPT.exists():
-        raise AssertionError('The portable card tool does not exist yet')
-    sys.path.insert(0, str(SCRIPT.parent))
-    spec = importlib.util.spec_from_file_location('cards', SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules['cards'] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-class CardsTest(unittest.TestCase):
-    def setUp(self):
-        self.tool = load_tool()
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = pathlib.Path(self.temp.name)
-        self.project = self.root / 'Film Việt'
-        self.project.mkdir()
-        (self.project/'private-voice.wav').write_bytes(b'fixture audio bytes')
-        self.font = self.root / 'serif.ttf'
-        self.font.write_bytes(b'\x00\x01\x00\x00test-font')
-        self.frame = self.root / 'review.jpg'
-        self.frame.write_bytes(b'\xff\xd8\xfftest-frame')
-        nested = {'id': 'inner', 'duration': 20000000, 'materials': {'audios': [{'id': 'voice', 'path': 'private-voice.wav'}]}, 'tracks': [{'id': 'original-voice', 'type': 'audio', 'segments': [{'id': 'speech', 'material_id': 'voice', 'target_timerange': {'start': 0, 'duration': 20000000}}]}]}
-        self.original = {'id': 'main', 'version': 360000, 'duration': 20000000, 'fps': 30., 'canvas_config': {'width': 1920, 'height': 1080, 'ratio': '16:9'}, 'materials': {'drafts': [{'id': 'compound', 'type': 'combination', 'draft': nested}], 'videos': [{'id': 'video', 'path': '', 'material_name': 'My compound'}], 'texts': []}, 'tracks': [{'id': 'main-video', 'type': 'video', 'segments': [{'id': 'keep-me', 'material_id': 'video', 'extra_material_refs': ['compound'], 'source_timerange': {'start': 0, 'duration': 20000000}, 'target_timerange': {'start': 0, 'duration': 20000000}, 'volume': .8}]}, {'id': 'user-text', 'type': 'text', 'segments': []}]}
-        self.indexed = self.project / 'Timelines/main'
-        self.indexed.mkdir(parents=True)
-        (self.project / 'Timelines/project.json').write_text(json.dumps({'main_timeline_id': 'main', 'id': 'project-id'}))
-        self.paths = [self.project/'draft_info.json', self.project/'draft_info.json.bak', self.project/'template-2.tmp', self.indexed/'draft_info.json', self.indexed/'draft_info.json.bak', self.indexed/'template-2.tmp']
-        for p in self.paths:
-            p.write_text(json.dumps(self.original))
-        self.plan = {'version': 1, 'project_sha256': self.tool.digest(self.indexed/'draft_info.json'), 'protected_ranges': [{'start': 1, 'end': 5, 'reason': 'important line and reaction'}], 'cards': [{'id': 'morning', 'title': 'THE NEXT MORNING', 'detail': 'THE ATRIUM', 'start': 8, 'duration': 3.2, 'evidence': {'start': 7, 'end': 13, 'frames': [str(self.frame)], 'visual_review': 'Empty floor at lower left; faces are higher and right.', 'dialogue_review': 'Reviewed the audio window: no dialogue during this card.'}}]}
-
-    def stage(self, name='run'):
-        return self.tool.stage(self.project, copy.deepcopy(self.plan), self.root/name, self.font)
-
-    def apply(self, stage):
-        with mock.patch.object(self.tool, 'editor_running', return_value=False):
-            return self.tool.apply(stage)
-
-    def test_overlay_preserves_compound_audio_user_tracks_and_syncs_mirrors(self):
-        stage = self.stage()
-        self.apply(stage)
-        out = json.loads((self.project/'draft_info.json').read_text())
-        self.assertEqual(out['tracks'][:2], self.original['tracks'])
-        self.assertEqual(out['materials']['drafts'], self.original['materials']['drafts'])
-        self.assertEqual(out['duration'], self.original['duration'])
-        self.assertEqual(len(out['tracks']), 4)
-        self.assertTrue(all(p.read_bytes() == self.paths[0].read_bytes() for p in self.paths))
-        self.assertEqual(out['materials']['videos'], self.original['materials']['videos'])
-        self.assertTrue(self.tool.verify(stage)['verified'])
-
-    def test_refuses_covering_protected_dialogue(self):
-        self.plan['cards'][0]['start'] = 3
-        self.plan['cards'][0]['evidence']['start'] = 0
-        with self.assertRaisesRegex(ValueError, 'protected'):
-            self.stage()
-
-    def test_refuses_unreviewed_or_rushed_cards(self):
-        self.plan['cards'][0]['duration'] = 1.5
-        with self.assertRaisesRegex(ValueError, 'read'):
-            self.stage()
-        self.plan['cards'][0]['duration'] = 3.2
-        self.plan['cards'][0]['evidence']['frames'] = []
-        with self.assertRaisesRegex(ValueError, 'frame'):
-            self.stage()
-
-    def test_stale_source_does_not_overwrite_manual_edit(self):
-        stage = self.stage()
-        self.indexed.joinpath('draft_info.json').write_text('{"manual":"edit"}')
-        with self.assertRaisesRegex(ValueError, 'changed'):
-            self.apply(stage)
-        self.assertEqual(self.indexed.joinpath('draft_info.json').read_text(), '{"manual":"edit"}')
-
-    def test_busy_editor_is_not_killed_or_bypassed(self):
-        stage = self.stage()
-        before = self.paths[0].read_bytes()
-        with mock.patch.object(self.tool, 'editor_running', return_value=True):
-            with self.assertRaisesRegex(ValueError, 'CapCut'):
-                self.tool.apply(stage)
-        self.assertEqual(self.paths[0].read_bytes(), before)
-
-    def test_repeat_replaces_only_owned_cards_and_restore_keeps_previous_version(self):
-        first = self.stage()
-        self.apply(first)
-        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
-        second = self.stage('run2')
-        self.apply(second)
-        out = json.loads(self.paths[0].read_text())
-        self.assertEqual(len(out['tracks']), 4)
-        with mock.patch.object(self.tool, 'editor_running', return_value=False):
-            self.tool.restore(second)
-        self.assertTrue(self.tool.verify(first)['verified'])
-
-    def test_guarded_restore_preserves_later_user_edits(self):
-        stage = self.stage()
-        self.apply(stage)
-        self.paths[0].write_text('{"new":"user edit"}')
-        with mock.patch.object(self.tool, 'editor_running', return_value=False):
-            with self.assertRaisesRegex(ValueError, 'changed'):
-                self.tool.restore(stage)
-        self.assertEqual(self.paths[0].read_text(), '{"new":"user edit"}')
-
-    def test_tampered_staged_file_is_rejected(self):
-        stage = self.stage()
-        (stage/'draft.json').write_text('{"evil":true}')
-        with self.assertRaisesRegex(ValueError, 'changed|integrity'):
-            self.apply(stage)
-
-    def test_mismatched_root_mirror_is_rejected(self):
-        self.paths[0].write_text('{"stale":true}')
-        with self.assertRaisesRegex(ValueError, 'mirror'):
-            self.stage()
-
-    def test_path_traversal_and_encrypted_drafts_are_rejected(self):
-        (self.project/'Timelines/project.json').write_text(json.dumps({'main_timeline_id': '../../elsewhere'}))
-        with self.assertRaisesRegex(ValueError, 'timeline'):
-            self.tool.inspect(self.project)
-        (self.project/'Timelines/project.json').unlink()
-        self.paths[0].write_bytes(b'not json')
-        with self.assertRaisesRegex(ValueError, 'JSON|encrypted|Ambiguous'):
-            self.tool.inspect(self.project)
-
-    def test_character_intro_requires_identity_and_first_appearance_review(self):
-        card = self.plan['cards'][0]
-        card.update(kind='character', title='MIRA VALE', detail='Restorer')
-        with self.assertRaisesRegex(ValueError, 'identity|appearance'):
-            self.stage()
-        card['evidence'].update(character_identity='Matched script and reference portrait.', first_appearance='Checked all earlier scenes: this is her first visible appearance.')
-        self.plan['style'] = {'theme': 'modern-thriller', 'title_color': '#D3E4EF', 'fade_seconds': .3}
-        stage = self.stage()
-        data = json.loads((stage/'draft.json').read_text())
-        self.assertEqual(data['materials']['texts'][0]['text_color'], '#D3E4EF')
-        self.assertEqual(data['tracks'][:2], self.original['tracks'])
-
-    def test_style_rejects_unsupported_effects_and_offscreen_detail(self):
-        self.plan['style'] = {'effect': 'giant-glitch'}
-        with self.assertRaisesRegex(ValueError, 'style'):
-            self.stage()
-        self.plan.pop('style')
-        self.plan['cards'][0]['y'] = -.8
-        with self.assertRaisesRegex(ValueError, 'safe'):
-            self.stage()
-
-    def character_card(self):
-        card = self.plan['cards'][0]
-        card.update(kind='character', title='MIRA VALE', detail='Restorer')
-        card['evidence'].update(character_identity='Matched the screenplay and reference.', first_appearance='Reviewed earlier scenes and this entrance.')
-        return card
-
-    def test_character_role_defaults_are_readable_and_inside_safe_area(self):
-        self.character_card()
-        stage = self.stage()
-        data = self.tool.read(stage/'draft.json')
-        name, role = data['materials']['texts']
-        self.assertEqual(name['font_size'], 6.2)
-        self.assertEqual(role['font_size'], 3.8)
-        self.assertEqual(role['text_color'], '#D4CDBE')
-        self.assertAlmostEqual(data['tracks'][-2]['segments'][0]['clip']['transform']['y'], -.64)
-        self.assertAlmostEqual(data['tracks'][-1]['segments'][0]['clip']['transform']['y'], -.77)
-        self.assertEqual(data['tracks'][:2], self.original['tracks'])
-
-    def test_character_role_omission_requires_a_documented_reason(self):
-        card = self.character_card()
-        card.pop('detail')
-        with self.assertRaisesRegex(ValueError, 'role'):
-            self.stage()
-        card['evidence']['role_omission_reason'] = 'The user explicitly requested names only.'
-        stage = self.stage()
-        data = self.tool.read(stage/'draft.json')
-        self.assertEqual(len(data['tracks']), 3)
-
-    def test_character_custom_style_and_position_override_defaults(self):
-        card = self.character_card()
-        card.update(y=-.6, style={'detail_size': 4.1, 'detail_color': '#C8DAE6'})
-        self.plan['style'] = {'theme': 'modern-thriller', 'title_size': 5.5}
-        stage = self.stage()
-        data = self.tool.read(stage/'draft.json')
-        self.assertEqual(data['materials']['texts'][0]['font_size'], 5.5)
-        self.assertEqual(data['materials']['texts'][1]['font_size'], 4.1)
-        self.assertEqual(data['materials']['texts'][1]['text_color'], '#C8DAE6')
-        self.assertAlmostEqual(data['tracks'][-1]['segments'][0]['clip']['transform']['y'], -.73)
-
-    def test_evidence_changed_after_staging_blocks_commit(self):
-        stage = self.stage()
-        self.frame.write_bytes(b'changed')
-        with self.assertRaisesRegex(ValueError, 'evidence|changed'):
-            self.apply(stage)
-
-    def test_source_media_changed_after_review_blocks_commit(self):
-        stage = self.stage()
-        (self.project/'private-voice.wav').write_bytes(b'new voice')
-        with self.assertRaisesRegex(ValueError, 'evidence|changed'):
-            self.apply(stage)
-
-    def test_repeated_apply_still_requires_editor_closed(self):
-        stage = self.stage()
-        self.apply(stage)
-        with mock.patch.object(self.tool, 'editor_running', return_value=True):
-            with self.assertRaisesRegex(ValueError, 'CapCut'):
-                self.tool.apply(stage)
-
-    def test_repeated_apply_rechecks_reviewed_sources(self):
-        stage = self.stage()
-        self.apply(stage)
-        (self.project/'private-voice.wav').write_bytes(b'replaced after first apply')
-        with self.assertRaisesRegex(ValueError, 'evidence|changed'):
-            self.apply(stage)
-
-    def test_restore_stops_if_editor_opens_before_first_write(self):
-        stage = self.stage()
-        self.apply(stage)
-        with mock.patch.object(self.tool, 'editor_running', side_effect=[False, True]):
-            with self.assertRaisesRegex(ValueError, 'CapCut'):
-                self.tool.restore(stage)
-        self.assertTrue(self.tool.verify(stage)['verified'])
-
-    def test_mid_write_failure_rolls_back_all_owned_writes(self):
-        stage = self.stage()
-        real = self.tool.atomic
-        counter = [0]
-        def fail_second(path, raw):
-            counter[0] += 1
-            if counter[0] == 2:
-                raise OSError('synthetic storage error')
-            return real(path, raw)
-        originals = [p.read_bytes() for p in self.paths]
-        with mock.patch.object(self.tool, 'atomic', side_effect=fail_second):
-            with self.assertRaisesRegex(OSError, 'storage'):
-                self.apply(stage)
-        self.assertEqual([p.read_bytes() for p in self.paths], originals)
-        self.assertFalse((self.project/self.tool.STATE).exists())
-
-    def test_legacy_24fps_draft_and_missing_text_collection(self):
-        import shutil
-        shutil.rmtree(self.project/'Timelines')
-        self.original['fps'] = 24
-        self.original['materials'].pop('texts')
-        for path in self.paths[:3]:
-            path.write_text(json.dumps(self.original))
-        self.plan['project_sha256'] = self.tool.digest(self.paths[0])
-        stage = self.stage()
-        self.apply(stage)
-        self.assertTrue(self.tool.verify(stage)['verified'])
-
-    def saved_titles(self):
-        first = self.stage()
-        self.apply(first)
-        return self.tool.read(self.paths[0])
-
-    def save_mirrors(self, data):
-        for path in self.paths:
-            path.write_bytes(self.tool.encoded(data))
-        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
-
-    def review_saved_ownership(self):
-        report = self.tool.inspect(self.project)['ownership']
-        self.plan['ownership_review'] = {**report, 'findings': 'Reviewed saved defaults, moved title and user animation against the previous staged draft.'}
-
-    def restyle(self, name='restyle'):
-        return self.tool.stage(self.project, copy.deepcopy(self.plan), self.root/name, self.font, preserve_owned=True)
-
-    def test_restyle_preserves_saved_text_position_timing_defaults_and_user_effect(self):
-        data = self.saved_titles()
-        material = data['materials']['texts'][0]
-        material['content'] = material['content'].replace('THE NEXT MORNING', 'USER WORDING')
-        material['caption_template_info'] = {'saved_default': True}
-        material['name'] = 'User clip label'
-        segment = data['tracks'][-2]['segments'][0]
-        segment['target_timerange']['start'] = 7500000
-        segment['clip']['transform']['x'] = -.4
-        segment['extra_material_refs'] = ['user-animation']
-        data['materials']['material_animations'] = [{'id': 'user-animation', 'animations': []}]
-        # The role remains synced, with its independent position preserved too.
-        data['tracks'][-1]['segments'][0]['target_timerange']['start'] = 7500000
-        data['tracks'][-1]['segments'][0]['clip']['transform']['x'] = -.3
-        self.save_mirrors(data)
-        with self.assertRaisesRegex(ValueError, 'ownership_review'):
-            self.restyle()
-        self.review_saved_ownership()
-        self.plan['style'] = {'title_color': '#D3E4EF'}
-        before = [p.read_bytes() for p in self.paths]
-        stage = self.restyle()
-        self.assertEqual([p.read_bytes() for p in self.paths], before)
-        self.apply(stage)
-        out = self.tool.read(self.paths[0])
-        self.assertEqual(out['tracks'], data['tracks'])
-        self.assertEqual(out['materials']['material_animations'], data['materials']['material_animations'])
-        updated = out['materials']['texts'][0]
-        self.assertIn('USER WORDING', updated['content'])
-        self.assertEqual(updated['caption_template_info'], {'saved_default': True})
-        self.assertEqual(updated['name'], 'User clip label')
-        self.assertEqual(updated['text_color'], '#D3E4EF')
-        self.assertTrue(self.tool.verify(stage)['verified'])
-
-    def test_restyle_bounds_use_saved_independent_role_anchor(self):
-        data = self.saved_titles()
-        data['tracks'][-2]['segments'][0]['clip']['transform'] = {'x': -.4, 'y': .4}
-        data['tracks'][-1]['segments'][0]['clip']['transform'] = {'x': .45, 'y': -.2}
-        self.save_mirrors(data)
-        self.review_saved_ownership()
-        card = self.plan['cards'][0]
-        card['bounds'] = [-.6, -.35, .65, .55]
-        card['evidence']['layout_review'] = 'Both saved anchors reviewed; independent role intentionally farther right.'
-        self.plan['style'] = {'title_color': '#DDDDDD'}
-        stage = self.restyle()
-        out = self.tool.read(stage/'draft.json')
-        self.assertEqual(out['tracks'], data['tracks'])
-        self.plan['cards'][0]['bounds'] = [-.6, .2, -.2, .55]
-        with self.assertRaisesRegex(ValueError, 'detail anchor'):
-            self.restyle('invalid-role-bounds')
-
-    def test_saved_role_above_title_is_valid_without_assuming_default_offset(self):
-        data = self.saved_titles()
-        data['tracks'][-2]['segments'][0]['clip']['transform']['y'] = -.78
-        data['tracks'][-1]['segments'][0]['clip']['transform']['y'] = -.60
-        self.save_mirrors(data)
-        self.review_saved_ownership()
-        self.plan['cards'][0]['bounds'] = [-.8, -.81, -.2, -.5]
-        self.plan['cards'][0]['evidence']['layout_review'] = 'Saved role deliberately above title; both stay within reviewed frame.'
-        stage = self.restyle()
-        self.assertEqual(self.tool.read(stage/'draft.json')['tracks'], data['tracks'])
-
-    def test_restyle_review_is_stale_after_another_saved_edit(self):
-        data = self.saved_titles()
-        data['materials']['texts'][0]['saved_default'] = True
-        self.save_mirrors(data); self.review_saved_ownership()
-        data['materials']['texts'][0]['saved_default'] = False
-        self.save_mirrors(data)
-        with self.assertRaisesRegex(ValueError, 'stale'):
-            self.restyle()
-
-    def test_restyle_does_not_reclaim_deleted_owned_text(self):
-        data = self.saved_titles()
-        data['materials']['texts'].pop()
-        self.save_mirrors(data); self.review_saved_ownership()
-        with self.assertRaisesRegex(ValueError, 'removed'):
-            self.restyle()
-
-    def test_restyle_does_not_claim_user_segment_added_inside_owned_track(self):
-        data = self.saved_titles()
-        data['tracks'][-2]['segments'].append(dict(id='user-segment', material_id='user-material',
-                                                   target_timerange={'start': 14000000, 'duration': 3000000}))
-        data['materials']['texts'].append(dict(id='user-material', content='keep'))
-        self.save_mirrors(data); self.review_saved_ownership()
-        with self.assertRaisesRegex(ValueError, 'membership changed'):
-            self.restyle()
-        self.assertEqual(self.tool.read(self.paths[0]), data)
-
-    def test_restyle_preserves_saved_segment_order(self):
-        second = copy.deepcopy(self.plan['cards'][0]); second.update(id='second', start=14)
-        second['evidence'].update(start=13, end=19)
-        self.plan['cards'].append(second)
-        data = self.saved_titles()
-        data['tracks'][-2]['segments'].reverse()
-        self.save_mirrors(data); self.review_saved_ownership()
-        stage = self.restyle(); self.apply(stage)
-        self.assertEqual(self.tool.read(self.paths[0])['tracks'], data['tracks'])
-
-    def test_restyle_adds_missing_intro_without_removing_omitted_existing_cards(self):
-        data = self.saved_titles()
-        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
-        new = copy.deepcopy(self.plan['cards'][0])
-        new.update(id='new-intro', title='Mira Vale', detail='Restorer', start=14, duration=3.2, kind='character')
-        new['evidence'].update(start=13, end=19, character_identity='Confirmed script identity.', first_appearance='Reviewed earlier scenes.')
-        self.plan['cards'] = [new]
-        stage = self.restyle()
-        self.apply(stage)
-        out = self.tool.read(self.paths[0])
-        self.assertEqual(len(out['tracks'][-2]['segments']), 2)
-        self.assertEqual(out['materials']['texts'][:2], data['materials']['texts'])
-
-    def test_restyle_rejects_new_card_overlapping_an_unlisted_owned_card(self):
-        self.saved_titles()
-        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
-        self.plan['cards'][0]['id'] = 'new-overlap'
-        with self.assertRaisesRegex(ValueError, 'overlaps an existing'):
-            self.restyle()
-
-    def test_restyle_preserves_unowned_title_added_to_new_text_collection(self):
-        # Initial edits on older drafts may create materials.texts themselves.
-        self.original['materials'].pop('texts')
-        self.save_mirrors(self.original)
-        data = self.saved_titles()
-        data['materials']['texts'].append({'id': 'user-added-text', 'content': 'keep exactly'})
-        self.save_mirrors(data)
-        stage = self.restyle()
-        self.apply(stage)
-        self.assertIn({'id': 'user-added-text', 'content': 'keep exactly'}, self.tool.read(self.paths[0])['materials']['texts'])
-        self.assertTrue(self.tool.verify(stage)['verified'])
-
-    def test_character_cast_review_requires_explicit_coverage_and_supports_pair(self):
-        card = self.character_card()
-        self.plan['introduce_characters'] = True
-        with self.assertRaisesRegex(ValueError, 'every principal'):
-            self.stage()
-        card['characters'] = ['mira', 'leo']
-        self.plan['character_review'] = [dict(id='mira', name='Mira Vale', status='introduced', card_id=card['id']),
-                                         dict(id='leo', name='Leo Vale', status='omitted', reason='Identity remains hidden.')]
-        with self.assertRaisesRegex(ValueError, 'cast IDs'):
-            self.stage()
-        self.plan['character_review'][1] = dict(id='leo', name='Leo Vale', status='introduced', card_id=card['id'])
-        card['title'] = 'Mira & Leo Vale'
-        self.stage()
-
-    def test_character_cast_omissions_need_reasons(self):
-        self.character_card()['characters'] = ['mira']
-        self.plan['character_review'] = [dict(id='mira', name='Mira Vale', status='introduced', card_id='morning'),
-                                         dict(id='leo', name='Leo Vale', status='omitted')]
-        with self.assertRaisesRegex(ValueError, 'specific reason'):
-            self.stage()
-
-    def test_cast_review_rejects_introducing_the_same_principal_twice(self):
-        card = self.character_card(); card['characters'] = ['mira']
-        self.plan['character_review'] = [dict(id='mira', name='Mira Vale', status='introduced', card_id='morning')]
-        second = copy.deepcopy(card); second.update(id='second-intro', start=14)
-        second['evidence'].update(start=13, end=19)
-        self.plan['cards'].append(second)
-        with self.assertRaisesRegex(ValueError, 'each principal once'):
-            self.stage()
-
-    def test_restyle_wording_change_is_explicit_and_removed_cards_stay_protected(self):
-        self.saved_titles()
-        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
-        self.plan['cards'][0].update(title='CUSTOM HEADING', replace_text=True)
-        stage = self.restyle()
-        self.apply(stage)
-        self.assertIn('CUSTOM HEADING', self.tool.read(self.paths[0])['materials']['texts'][0]['content'])
-
-    def native_fade_fixture(self, data):
-        folder = self.root/'existing-fade'; folder.mkdir()
-        resource = folder/'config.json'; resource.write_text('{"fixture":true}')
-        data['materials']['material_animations'] = [{'id': 'existing-in', 'animations': [dict(type='in', path=str(folder), resource_id='existing-resource', duration=700000)]}]
-        segment = data['tracks'][-2]['segments'][0]
-        segment['extra_material_refs'] = ['existing-in']
-        self.plan['native_fade_in'] = dict(material_id='existing-in', source_segment_id=segment['id'],
-                                           review='Reviewed local existing fade-in, not a guessed effect.', files=[str(resource)])
-        return resource
-
-    def test_native_fade_reuses_existing_asset_on_both_lines_and_pins_resource(self):
-        data = self.saved_titles()
-        resource = self.native_fade_fixture(data)
-        self.save_mirrors(data); self.review_saved_ownership()
-        stage = self.restyle()
-        out = self.tool.read(stage/'draft.json')
-        self.assertEqual(out['materials']['material_animations'], data['materials']['material_animations'])
-        self.assertTrue(all(s['extra_material_refs'] == ['existing-in'] for t in out['tracks'][-2:] for s in t['segments']))
-        resource.write_text('changed after review')
-        with self.assertRaisesRegex(ValueError, 'evidence|changed'):
-            self.apply(stage)
-
-    def test_native_fade_accepts_existing_in_out_pair_without_dropping_out(self):
-        data = self.saved_titles()
-        resource = self.native_fade_fixture(data)
-        data['materials']['material_animations'][0]['animations'].append(
-            dict(type='out', path=str(resource.parent), resource_id='existing-out-resource', duration=500000))
-        self.save_mirrors(data); self.review_saved_ownership()
-        stage = self.restyle()
-        out = self.tool.read(stage/'draft.json')
-        self.assertEqual(out['materials']['material_animations'], data['materials']['material_animations'])
-        self.assertTrue(all(s['extra_material_refs'] == ['existing-in']
-                            for t in out['tracks'][-2:] for s in t['segments']))
-
-    def test_declared_bounds_cannot_be_on_other_side_of_text_anchor(self):
-        self.plan['cards'][0].update(x=-.82, bounds=[.1, .1, .7, .7])
-        self.plan['cards'][0]['evidence']['layout_review'] = 'Claims the text fits in this box.'
-        with self.assertRaisesRegex(ValueError, 'anchor|bounds'):
-            self.stage()
-
-    def test_required_ending_is_not_satisfied_by_a_normal_location_card(self):
-        self.plan['requirements'] = {'ending': True}
-        with self.assertRaisesRegex(ValueError, 'ending'):
-            self.stage()
-
-    def test_required_native_fade_is_not_satisfied_by_opacity_keyframes(self):
-        self.plan['requirements'] = {'native_fade': True}
-        with self.assertRaisesRegex(ValueError, 'native fade|native_fade'):
-            self.stage()
-
-    def external_native_template(self):
-        source = self.root/'native-template-project'; source.mkdir()
-        assets = source/'effect'; assets.mkdir()
-        resource = assets/'config.json'; resource.write_text('{"real-local-template":true}')
-        data = copy.deepcopy(self.original); data['id'] = 'native-template'
-        data['materials']['texts'] = [{'id': 'native-text', 'type': 'text', 'content': '{"text":"Example"}'}]
-        data['materials']['material_animations'] = [{'id': 'native-pair', 'type': 'sticker_animation',
-            'animations': [dict(type='in', path=str(assets), resource_id='local-in', duration=700000),
-                           dict(type='out', path=str(assets), resource_id='local-out', duration=500000)]}]
-        data['tracks'][-1]['segments'] = [{'id': 'native-source', 'material_id': 'native-text',
-                                         'extra_material_refs': ['native-pair']}]
-        (source/'draft_info.json').write_text(json.dumps(data))
-        self.plan['native_fade_in'] = dict(source_project=str(source),
-            source_project_sha256=self.tool.digest(source/'draft_info.json'),
-            material_id='native-pair', source_segment_id='native-source',
-            review='Existing local native in/out pair, reviewed on source text.', files=[str(resource)])
-        self.plan['requirements'] = {'native_fade': True}
-        return source
-
-    def test_normal_hold_requires_known_positive_native_durations_and_plateau(self):
-        source=self.external_native_template()
-        path=source/'draft_info.json';original=self.tool.read(path)
-        for i,pair in enumerate(((4000000,4000000),(None,500000),(0,500000),(float('nan'),500000))):
-            with self.subTest(durations=pair):
-                data=copy.deepcopy(original)
-                for animation,duration in zip(data['materials']['material_animations'][0]['animations'],pair):
-                    if duration is None:
-                        animation.pop('duration')
-                    else:
-                        animation['duration']=duration
-                path.write_text(json.dumps(data))
-                self.plan['native_fade_in']['source_project_sha256']=self.tool.digest(path)
-                with self.assertRaisesRegex(ValueError,'fade.*hold|hold.*fade|fade duration'):
-                    self.stage('invalid-normal-duration-'+str(i))
-
-    def test_blank_project_can_import_reviewed_local_native_pair_and_restore(self):
-        self.external_native_template()
-        stage = self.stage(); self.apply(stage)
-        out = self.tool.read(self.paths[0])
-        animations = out['materials']['material_animations']
-        self.assertEqual(len(animations), 1)
-        self.assertEqual([a['type'] for a in animations[0]['animations']], ['in', 'out'])
-        self.assertTrue(all(s['extra_material_refs'] == [animations[0]['id']]
-                            for t in out['tracks'][-2:] for s in t['segments']))
-        with mock.patch.object(self.tool, 'editor_running', return_value=False):
-            self.tool.restore(stage)
-        self.assertEqual(self.tool.read(self.paths[0]), self.original)
-
-    def test_external_native_template_changed_after_review_blocks_apply(self):
-        source = self.external_native_template()
-        stage = self.stage()
-        (source/'draft_info.json').write_text('{"manual":"later edit"}')
-        with self.assertRaisesRegex(ValueError, 'evidence|changed'):
-            self.apply(stage)
-        self.assertEqual(self.tool.read(self.paths[0]), self.original)
-
-    def test_cannot_remove_imported_effect_later_referenced_by_unowned_text(self):
-        self.external_native_template()
-        first = self.stage(); self.apply(first)
-        data = self.tool.read(self.paths[0])
-        effect = data['materials']['material_animations'][0]['id']
-        data['tracks'][1]['segments'].append({'id': 'user-title', 'material_id': 'user-text',
-                                             'extra_material_refs': [effect]})
-        self.save_mirrors(data)
-        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
-        with self.assertRaisesRegex(ValueError, 'unowned|shared|referenced'):
-            self.stage('repeat')
-        self.assertEqual(self.tool.read(self.paths[0]), data)
-
-    def test_review_manifest_rejects_opening_frame_for_later_card(self):
-        manifest = self.root/'manifest.json'
-        manifest.write_text(json.dumps({'project_sha256': self.plan['project_sha256'],
-                                       'frames': [{'file': str(self.frame), 'timeline_time': 0.5,
-                                                   'source': str(self.project/'private-voice.wav')}]}))
-        self.plan['cards'][0]['evidence']['manifest'] = str(manifest)
-        with self.assertRaisesRegex(ValueError, 'frame|hold|coverage'):
-            self.stage()
-
-    def test_review_manifest_requires_end_of_hold_not_only_first_frame(self):
-        manifest = self.root/'manifest.json'
-        manifest.write_text(json.dumps({'project_sha256': self.plan['project_sha256'],
-                                       'frames': [{'file': str(self.frame), 'timeline_time': 8.0,
-                                                   'source': str(self.project/'private-voice.wav')}]}))
-        self.plan['cards'][0]['evidence']['manifest'] = str(manifest)
-        with self.assertRaisesRegex(ValueError, 'hold|coverage'):
-            self.stage()
-
-    def cut_manifest_fixture(self):
-        rows = []
-        for i, timestamp in enumerate([8., 8.5, 9., 9.5, 9.98, 10.02, 10.5, 11., 11.2]):
-            path = self.root/f'shot-{i}.jpg'; path.write_bytes(b'\xff\xd8\xfffixture')
-            rows.append(dict(file=str(path), timeline_time=timestamp, source='fixture-video.mp4'))
-        manifest = self.root/'manifest.json'
-        manifest.write_text(json.dumps({'project_sha256': self.plan['project_sha256'], 'frames': rows,
-                                       'cuts': [{'timeline_time': 10., 'kind': 'source-internal'}]}))
-        card = self.plan['cards'][0]
-        card.update(kind='character', characters=['mira'], bounds=[-.8, -.82, -.2, -.4])
-        card['evidence'].update(manifest=str(manifest), frames=[r['file'] for r in rows],
-            layout_review='Reviewed both lines, including frames on both sides of cut.',
-            character_identity='Mira matched to screenplay/portrait.', first_appearance='Earlier scenes reviewed.')
-        return manifest, rows
-
-    def test_character_cannot_cross_cut_without_identity_continuity_review(self):
-        self.cut_manifest_fixture()
-        with self.assertRaisesRegex(ValueError, 'cut|continuity'):
-            self.stage()
-
-    def test_static_overlay_frames_cannot_prove_coverage_of_moving_footage(self):
-        child=self.original['materials']['drafts'][0]['draft']
-        child['materials']['videos']=[dict(id='moving-video',path=str(self.frame),width=1920,height=1080,type='video')]
-        child['tracks'].append(dict(type='video',segments=[dict(id='moving-segment',material_id='moving-video',
-            target_timerange=dict(start=0,duration=20000000),source_timerange=dict(start=0,duration=20000000))]))
-        self.save_mirrors(self.original)
-        manifest, rows = self.cut_manifest_fixture()
-        self.plan['cards'][0]['kind'] = 'location'
-        payload = self.tool.read(manifest)
-        for row in payload['frames']:
-            row['source_type'] = 'photo'
-        payload['frames'].append(dict(file=str(self.frame), timeline_time=10., source_type='video'))
-        manifest.write_text(json.dumps(payload))
-        with self.assertRaisesRegex(ValueError, 'coverage|footage|hold'):
-            self.stage()
-
-    def test_full_hold_with_cut_continuity_is_accepted_and_manifest_is_pinned(self):
-        manifest, rows = self.cut_manifest_fixture()
-        self.plan['cards'][0]['evidence']['cut_continuity'] = [
-            dict(at=10., characters=['mira'], before=rows[4]['file'], after=rows[5]['file'],
-                 review='The same confirmed character remains next to this label in both reviewed shots.')]
-        stage = self.stage()
-        manifest.write_text('{"changed":"after staging"}')
-        with self.assertRaisesRegex(ValueError, 'evidence|changed'):
-            self.apply(stage)
-
-    def test_short_character_label_can_end_before_identity_cut(self):
-        self.plan['cards'][0].update(kind='character', title='MIRA', detail='Restorer', duration=2.1)
-        self.plan['cards'][0]['evidence'].update(character_identity='Mira matched to portrait.',
-                                               first_appearance='Earlier scenes reviewed.')
-        stage = self.stage()
-        out = self.tool.read(stage/'draft.json')
-        self.assertEqual(out['tracks'][-2]['segments'][0]['target_timerange']['duration'], 2100000)
-
-    def test_explicit_short_hold_can_fit_before_cut_without_silently_extending_to_two_seconds(self):
-        self.cut_manifest_fixture()
-        self.plan['version'] = 2
-        card = self.plan['cards'][0]
-        card.update(title='MIRA', detail='Restorer', duration=1.9)
-        with self.assertRaisesRegex(ValueError, 'short|reading'):
-            self.stage('unreviewed-short')
-        card['evidence']['short_hold_review'] = 'Two concise words remain readable; finish before the change of person. Independent reading-time review is still required.'
-        for kind, title, detail in [('character', 'MIRA', 'Restorer'),
-                                    ('time-location', 'Night', 'The hall')]:
-            with self.subTest(kind=kind):
-                card.update(kind=kind, title=title, detail=detail)
-                stage = self.stage('reviewed-short-'+kind)
-                out = self.tool.read(stage/'draft.json')
-                hold = out['tracks'][-2]['segments'][0]['target_timerange']
-                self.assertEqual(hold['start'],8000000)
-                self.assertEqual(hold['duration'],1900000)
-                self.assertLess(hold['start']+hold['duration'],10000000)
-                with self.assertRaisesRegex(ValueError, 'independent.*review'):
-                    self.tool.apply(stage)
-        card['evidence'].pop('short_hold_review')
-        with self.assertRaisesRegex(ValueError, 'short|reading'):
-            self.stage('unreviewed-short-location')
-        card['evidence']['short_hold_review'] = 'Reviewed concise time/location label within the actual scene.'
-        self.plan['version'] = 1
-        with self.assertRaisesRegex(ValueError, 'short|reading'):
-            self.stage('legacy-short-location')
-        self.plan['version'] = 2
-        card['duration'] = .2
-        with self.assertRaisesRegex(ValueError, 'distinct opacity keyframes'):
-            self.stage('impossible-short-location')
-
-    def test_short_hold_refuses_native_fades_that_consume_the_entire_hold(self):
-        folder=self.root/'native-entry';folder.mkdir();resource=folder/'config.json';resource.write_text('{}')
-        data=copy.deepcopy(self.original)
-        data['materials']['texts'].append({'id':'user-template','type':'text'})
-        data['tracks'][1]['segments']=[dict(id='template-segment',material_id='user-template',extra_material_refs=['template-fades'])]
-        data['materials']['material_animations']=[dict(id='template-fades',animations=[
-            dict(type='in',path=str(folder),duration=1000000),dict(type='out',path=str(folder),duration=1000000)])]
-        self.save_mirrors(data);self.cut_manifest_fixture();self.plan['version']=2
-        self.plan['native_fade_in']=dict(material_id='template-fades',source_segment_id='template-segment',
-            files=[str(resource)],review='Existing local native pair reviewed.')
-        self.plan['cards'][0].update(title='MIRA',detail='Restorer',duration=1.9)
-        self.plan['cards'][0]['evidence']['short_hold_review']='Concise label; end before identity cut. Native effects need a readable plateau.'
-        with self.assertRaisesRegex(ValueError,'fade.*hold|hold.*fade'):
-            self.stage('effects-too-long')
-        data['materials']['material_animations'][0]['animations'][0]['duration']=700000
-        data['materials']['material_animations'][0]['animations'][1]['duration']=500000
-        self.save_mirrors(data);self.cut_manifest_fixture()
-        stage=self.stage('effects-fit')
-        out=self.tool.read(stage/'draft.json')
-        self.assertTrue(all(s['extra_material_refs']==['template-fades'] for t in out['tracks'][-2:] for s in t['segments']))
-
-    def test_reviewed_native_durations_clone_effect_without_mutating_user_pair(self):
-        folder=self.root/'native-entry';folder.mkdir();resource=folder/'config.json';resource.write_text('{}')
-        data=copy.deepcopy(self.original)
-        data['materials']['texts'].append({'id':'user-template','type':'text'})
-        data['tracks'][1]['segments']=[dict(id='template-segment',material_id='user-template',extra_material_refs=['template-fades'])]
-        pair=dict(id='template-fades',animations=[
-            dict(type='in',path=str(folder),duration=700000,start=0,resource_id='existing-in'),
-            dict(type='out',path=str(folder),duration=500000,start=0,resource_id='existing-out')])
-        data['materials']['material_animations']=[copy.deepcopy(pair)]
-        self.save_mirrors(data);self.cut_manifest_fixture();self.plan['version']=2
-        self.plan['native_fade_in']=dict(material_id='template-fades',source_segment_id='template-segment',
-            files=[str(resource)],review='Reviewed existing native pair; shorten fades for the brief first appearance.',
-            durations_seconds={'in':.2,'out':.2})
-        self.plan['cards'][0].update(title='MIRA',detail='Restorer',duration=1.3)
-        self.plan['cards'][0]['evidence']['short_hold_review']='0.2s in/out leaves 0.9s fully visible; independent reading judgment remains required.'
-        staged=self.stage('shorter-native-fades')
-        out=self.tool.read(staged/'draft.json')
-        self.assertEqual(out['materials']['material_animations'][0],pair)
-        imported=out['materials']['material_animations'][1]
-        self.assertNotEqual(imported['id'],pair['id'])
-        self.assertEqual([a['duration'] for a in imported['animations']],[200000,200000])
-        for old,new in zip(pair['animations'],imported['animations']):
-            self.assertEqual({k:v for k,v in old.items() if k!='duration'},
-                             {k:v for k,v in new.items() if k!='duration'})
-        self.assertTrue(all(s['extra_material_refs']==[imported['id']]
-                            for t in out['tracks'][-2:] for s in t['segments']))
-        self.assertEqual(self.tool.read(self.indexed/'draft_info.json')['materials']['material_animations'],[pair])
-        for invalid in ({'loop':.2},{'in':0},{'in':-.2},{'in':True},{'in':float('nan')},{'in':1,'out':1}):
-            with self.subTest(durations=invalid):
-                self.plan['native_fade_in']['durations_seconds']=invalid
-                with self.assertRaisesRegex(ValueError,'fade|hold'):
-                    self.stage('invalid-native-duration')
-
-    def test_new_plan_cannot_apply_without_independent_visual_review(self):
-        self.cut_manifest_fixture()
-        self.plan['version'] = 2
-        self.plan['cards'][0]['duration'] = 2
-        stage = self.stage()
-        before = [p.read_bytes() for p in self.paths]
-        with mock.patch.object(self.tool, 'editor_running', return_value=False):
-            with self.assertRaisesRegex(ValueError, 'independent.*review'):
-                self.tool.apply(stage)
-        self.assertEqual([p.read_bytes() for p in self.paths], before)
-
-    def test_native_fade_rejects_invented_resource_or_wrong_source_segment(self):
-        data = self.saved_titles()
-        self.native_fade_fixture(data)
-        self.save_mirrors(data); self.review_saved_ownership()
-        self.plan['native_fade_in']['source_segment_id'] = 'not-a-real-segment'
-        with self.assertRaisesRegex(ValueError, 'source text segment'):
-            self.restyle()
-
-    def test_native_fade_never_replaces_a_different_user_animation(self):
-        data = self.saved_titles()
-        self.native_fade_fixture(data)
-        data['materials']['material_animations'].append({'id': 'other-animation', 'animations': []})
-        data['tracks'][-1]['segments'][0]['extra_material_refs'] = ['other-animation']
-        self.save_mirrors(data); self.review_saved_ownership()
-        with self.assertRaisesRegex(ValueError, 'different existing'):
-            self.restyle()
-        self.assertEqual(self.tool.read(self.paths[0]), data)
-
-    def test_ending_is_native_text_without_timeline_extension(self):
-        self.plan['cards'][0].update(kind='ending', title='THE END', detail='', start=16, duration=3.6, layout='center')
-        self.plan['cards'][0]['evidence'].update(start=12, end=20)
-        stage = self.stage()
-        data = self.tool.read(stage/'draft.json')
-        self.assertEqual(data['duration'], self.original['duration'])
-        self.assertEqual(data['tracks'][:2], self.original['tracks'])
-        self.assertEqual(len(data['materials']['videos']), len(self.original['materials']['videos']))
-
-
-    def paired_plan(self):
-        self.plan['protected_ranges'] = [{'start': 7, 'end': 13, 'kind': 'dialogue', 'reason': 'Speech continues'}]
-        self.plan['introduce_characters'] = True
-        self.plan['character_review'] = []
-        self.plan['cards'] = []
-        for ident, x, bounds in [('mira', -.5, [-.8, -.6, -.2, -.3]), ('leo', .5, [.2, -.6, .8, -.3])]:
-            self.plan['cards'].append(dict(id=ident, kind='character', characters=[ident], title=ident.title(),
-                detail='Restorer', start=8, duration=3.2, x=x, y=-.4, simultaneous_group='pair', bounds=bounds,
-                exclusion_zones=[[-.85, -.85, .85, -.65]],
-                evidence=dict(start=7, end=13, frames=[str(self.frame)], visual_review='Reviewed full two-shot.',
-                    dialogue_review='Speech continues; identifiers do not cover captions.',
-                    character_identity='Confirmed script identity.', first_appearance='First recognizable view.',
-                    layout_review='Full name and role extents checked against subtitles and movement.',
-                    identity_association='Label stays beside this person throughout the hold.')))
-            self.plan['character_review'].append(dict(id=ident, name=ident.title(), status='introduced', card_id=ident))
-
-    def test_simultaneous_labels_use_separate_tracks_and_preserve_subtitles(self):
-        self.paired_plan()
-        stage = self.stage(); self.apply(stage)
-        data = self.tool.read(self.paths[0])
-        self.assertEqual(data['tracks'][:2], self.original['tracks'])
-        added = data['tracks'][2:]
-        self.assertEqual(len(added), 4)
-        self.assertTrue(all(len(t['segments']) == 1 for t in added))
-        self.assertTrue(self.tool.verify(stage)['verified'])
-
-    def test_simultaneous_group_requires_distinct_reviewed_noncolliding_labels(self):
-        for mutation in ('collision', 'review', 'timing', 'duplicate', 'subtitle', 'third'):
-            with self.subTest(mutation=mutation):
-                self.paired_plan(); card = self.plan['cards'][1]
-                if mutation == 'collision': card['bounds'] = self.plan['cards'][0]['bounds']
-                if mutation == 'review': card['evidence'].pop('identity_association')
-                if mutation == 'timing': card['start'] += .5
-                if mutation == 'duplicate': card['characters'] = ['mira']
-                if mutation == 'subtitle': card['exclusion_zones'] = [[.3, -.8, .7, -.4]]
-                if mutation == 'third':
-                    third = copy.deepcopy(card); third.update(id='accidental', simultaneous_group=None)
-                    self.plan['cards'].append(third)
-                with self.assertRaises(ValueError): self.stage(mutation)
-
-    def test_restyle_retains_custom_typography_when_only_color_requested(self):
-        data = self.saved_titles(); material = data['materials']['texts'][0]
-        content = json.loads(material['content']); content['styles'][0].update(size=4.7, letter_spacing=.025)
-        content['styles'][0]['font']['path'] = str(self.font)
-        material.update(content=json.dumps(content), font_size=4.7, letter_spacing=.025)
-        self.save_mirrors(data); self.review_saved_ownership()
-        self.plan['style'] = {'title_color': '#ABCDEF'}
-        stage = self.tool.stage(self.project, self.plan, self.root/'retain', None, preserve_owned=True)
-        self.apply(stage); updated = self.tool.read(self.paths[0])['materials']['texts'][0]
-        self.assertEqual(updated['font_size'], 4.7)
-        self.assertEqual(updated['letter_spacing'], .025)
-        self.assertEqual(json.loads(updated['content'])['styles'][0]['size'], 4.7)
-        self.assertEqual(updated['font_path'], material['font_path'])
-        self.assertEqual(updated['text_color'], '#ABCDEF')
-
-    def test_per_card_font_multiline_and_explicit_scale_width(self):
-        other = self.root/'sans.otf'; other.write_bytes(b'OTTOtest-font')
-        self.plan['style'] = {'title_spacing': .17, 'detail_spacing': .23}
-        card = self.plan['cards'][0]
-        card.update(font=str(other), title='THE NEXT\nMORNING', text_layout={'scale': .8, 'line_max_width': .5})
-        stage = self.stage(); self.apply(stage); data = self.tool.read(self.paths[0])
-        material = data['materials']['texts'][0]; segment = data['tracks'][-2]['segments'][0]
-        self.assertEqual(material['font_path'], str(other.resolve()))
-        self.assertEqual(json.loads(material['content'])['text'], 'THE NEXT\nMORNING')
-        self.assertEqual(material['line_max_width'], .5)
-        self.assertTrue(material['force_apply_line_max_width'])
-        self.assertEqual(segment['clip']['scale'], {'x': .8, 'y': .8})
-        self.assertEqual(segment['uniform_scale']['value'], .8)
-        for text, spacing in zip(data['materials']['texts'], (.17, .23)):
-            self.assertEqual(text['letter_spacing'], spacing)
-            self.assertEqual(json.loads(text['content'])['styles'][0]['letter_spacing'], spacing)
-
-    def test_restyle_preserves_short_manual_hold(self):
-        data = self.saved_titles()
-        for track in data['tracks'][-2:]:
-            track['segments'][0]['target_timerange']['duration'] = 2100000
-        self.save_mirrors(data); self.review_saved_ownership()
-        stage = self.restyle(); self.apply(stage)
-        self.assertEqual(self.tool.read(self.paths[0])['tracks'], data['tracks'])
-
-    def test_simultaneous_addition_cannot_overlap_an_omitted_saved_card(self):
-        self.saved_titles(); self.paired_plan()
-        self.plan['project_sha256'] = self.tool.digest(self.indexed/'draft_info.json')
-        with self.assertRaisesRegex(ValueError, 'omitted from the plan'): self.restyle()
-
-    def test_reviewed_bounds_reject_overflow_even_when_anchor_is_safe(self):
-        self.plan['cards'][0]['bounds'] = [-1.2, -.8, .2, -.2]
-        with self.assertRaisesRegex(ValueError, 'bounds'): self.stage()
-
-    def test_incremental_restyle_syncs_only_owned_content_and_restores(self):
-        data = self.saved_titles()
-        folder = self.indexed/'attachment/patch'; folder.mkdir(parents=True)
-        ss = [{'id': seg['id'], 'material': {'type': 'text', 'content': next(m['content'] for m in data['materials']['texts'] if m['id'] == seg['material_id'])}}
-              for track in data['tracks'][-2:] for seg in track['segments']]
-        ss.append({'id': 'user-subtitle', 'material': {'content': 'preserve this byte content'}})
-        mini = {'mini_draft_data': {'segments': ss, 'header': {'index': 3}}}
-        (folder/'mini_draft.json').write_text(json.dumps(mini))
-        (folder/'patch.json').write_text('{"patch_data":[]}')
-        self.plan.update(project_sha256=self.tool.digest(self.indexed/'draft_info.json'), sync_incremental_snapshot=True,
-                         style={'title_color': '#ABCDEF'})
-        stage = self.restyle(); self.apply(stage)
-        updated = self.tool.read(folder/'mini_draft.json')
-        self.assertEqual(updated['mini_draft_data']['segments'][-1], ss[-1])
-        self.assertIn('0.670588', updated['mini_draft_data']['segments'][0]['material']['content'])
-        with mock.patch.object(self.tool, 'editor_running', return_value=False): self.tool.restore(stage)
-        self.assertEqual(self.tool.read(folder/'mini_draft.json'), mini)
-
-    def test_nonempty_incremental_patch_is_never_cleared(self):
-        self.saved_titles(); folder = self.indexed/'attachment/patch'; folder.mkdir(parents=True)
-        (folder/'mini_draft.json').write_text('{}')
-        patch = '{"patch_data":[{"user":"edit"}]}'
-        (folder/'patch.json').write_text(patch)
-        self.plan.update(project_sha256=self.tool.digest(self.indexed/'draft_info.json'), sync_incremental_snapshot=True)
-        with self.assertRaisesRegex(ValueError, 'incremental patch'): self.restyle()
-        self.assertEqual((folder/'patch.json').read_text(), patch)
-
-    def test_layout_repair_preserves_populated_subtitles_and_native_animations(self):
-        self.original['materials']['texts'] = [dict(id='caption-'+str(i), type='subtitle', content='manual words',
-            base_content='manual words', background_alpha=.6) for i in range(288)]
-        self.original['tracks'][1]['segments'] = [dict(id='subtitle-segment-'+str(i), material_id='caption-'+str(i)) for i in range(288)]
-        self.save_mirrors(self.original)
-        data = self.saved_titles()
-        self.plan.update(project_sha256=self.tool.digest(self.indexed/'draft_info.json'))
-        self.plan['cards'][0].update(bounds=[-.8, -.82, -.2, -.1], text_layout={'scale': .8, 'title_x': -.5, 'title_y': -.2})
-        self.plan['cards'][0]['evidence']['layout_review'] = 'Reviewed title/role bounds throughout the hold.'
-        stage = self.restyle(); self.apply(stage); updated = self.tool.read(self.paths[0])
-        self.assertEqual(updated['tracks'][1], data['tracks'][1])
-        self.assertEqual(updated['materials']['texts'][:288], data['materials']['texts'][:288])
-        seg = updated['tracks'][-2]['segments'][0]
-        self.assertEqual(seg['clip']['transform'], {'x': -.5, 'y': -.2})
-        self.assertEqual(seg['clip']['scale']['x'], seg['uniform_scale']['value'])
-        self.assertEqual(seg['common_keyframes'], data['tracks'][-2]['segments'][0]['common_keyframes'])
-
-
-if __name__ == '__main__':
+SCRIPTS_DIR = ROOT / "skills" / "capcut-cinematic-cards" / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+import cards
+import native_text
+
+
+class CinematicCardsEngineTest(unittest.TestCase):
+    def test_multi_span_rich_text_hierarchy_and_colors(self):
+        style = native_text.resolve_style(
+            {
+                "title_font": "Baskerville-Bold",
+                "detail_font": "Baskerville-SemiBoldItalic",
+                "char_title_color": "#F3CA6E",
+                "char_detail_color": "#F6EFE2",
+                "detail_accent_color": "#F2CE7E",
+                "flanker_color": "#D8B268",
+            }
+        )
+        title_spans = native_text.compute_rich_text_spans(
+            "Dr. Josie Calder", style.character_title, is_title=True
+        )
+        self.assertEqual(len(title_spans), 2)
+        self.assertEqual(title_spans[0][2], "#F6EFE2")
+        self.assertLess(title_spans[0][3], style.character_title.font_size)
+        self.assertEqual(title_spans[1][2], "#F3CA6E")
+
+        detail_text = native_text.format_detail_with_flankers(
+            "Stable Hand · Former Master Horseman", "—"
+        )
+        detail_spans = native_text.compute_rich_text_spans(
+            detail_text, style.character_detail, is_title=False
+        )
+        self.assertGreaterEqual(len(detail_spans), 5)
+        payload = json.loads(
+            native_text.build_rich_text_content(
+                detail_text, style.character_detail, is_title=False
+            )
+        )
+        self.assertEqual(payload["text"], detail_text)
+        self.assertEqual(len(payload["styles"]), len(detail_spans))
+
+    def test_centered_axis_symmetry_and_outer_edge_bounds(self):
+        x_t, x_d, y_t, y_d, sc = native_text.resolve_card_position(
+            {
+                "kind": "char",
+                "title": "Tamarack",
+                "detail": "«  $5M Champion · Thoroughbred Stallion  »",
+                "anchor": "lower-right",
+            },
+            title_font="Baskerville-Bold",
+            detail_font="Baskerville-SemiBoldItalic",
+            title_size=6.8,
+            detail_size=4.3,
+            align="center",
+            order="title-first",
+        )
+        self.assertEqual(x_t, x_d)
+        self.assertGreater(x_t, 0.30)
+        self.assertLess(x_t, 0.80)
+        self.assertGreater(y_t, y_d)
+
+    def test_native_fade_in_out_resource_ids_and_out_start_offset(self):
+        preset = native_text.resolve_style({"stagger_sec": 0.10})
+        pair = native_text.build_card_pair(
+            card_id="test_01",
+            kind="char",
+            title_text="Elijah Fairley",
+            detail_text="—  Stable Hand · Former Master Horseman  —",
+            start_us=8_000_000,
+            duration_us=3_500_000,
+            x=0.45,
+            y_title=-0.32,
+            preset=preset,
+        )
+        t_anims = pair.title_animation["animations"]
+        self.assertEqual(len(t_anims), 2)
+        self.assertEqual(t_anims[0]["id"], "6724916044072227332")
+        self.assertEqual(t_anims[0]["category_id"], "ruchang")
+        self.assertEqual(t_anims[0]["start"], 0)
+        self.assertEqual(t_anims[1]["id"], "6724919382104871427")
+        self.assertEqual(t_anims[1]["category_id"], "chuchang")
+        self.assertEqual(
+            t_anims[1]["start"],
+            pair.title_segment["target_timerange"]["duration"] - t_anims[1]["duration"],
+        )
+        self.assertGreater(
+            pair.detail_segment["target_timerange"]["start"],
+            pair.title_segment["target_timerange"]["start"],
+        )
+
+    def test_compound_clip_trim_immune_unwrapping_and_apply_plan(self):
+        draft = {
+            "duration": 20_000_000,
+            "materials": {
+                "videos": [],
+                "texts": [],
+                "material_animations": [],
+                "drafts": [
+                    {
+                        "id": "sub_1",
+                        "draft": {
+                            "materials": {
+                                "videos": [
+                                    {"id": "v1", "path": "/tmp/V-001.mp4"},
+                                    {"id": "v2", "path": "/tmp/V-002.mp4"},
+                                ]
+                            },
+                            "tracks": [
+                                {
+                                    "type": "video",
+                                    "segments": [
+                                        {
+                                            "material_id": "v1",
+                                            "target_timerange": {"start": 0, "duration": 10_000_000},
+                                            "source_timerange": {"start": 0, "duration": 10_000_000},
+                                        },
+                                        {
+                                            "material_id": "v2",
+                                            "target_timerange": {"start": 10_000_000, "duration": 10_000_000},
+                                            "source_timerange": {"start": 0, "duration": 10_000_000},
+                                        },
+                                    ],
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+            "tracks": [
+                {
+                    "type": "video",
+                    "segments": [
+                        {
+                            "material_id": "sub_1",
+                            "target_timerange": {"start": 0, "duration": 12_000_000},
+                            "source_timerange": {"start": 4_000_000, "duration": 12_000_000},
+                        }
+                    ],
+                }
+            ],
+        }
+        segs = cards.load_video_timeline(draft)
+        self.assertEqual(len(segs), 2)
+        self.assertAlmostEqual(segs[0].source_start_s, 4.0)
+        self.assertAlmostEqual(segs[0].timeline_dur_s, 6.0)
+        self.assertAlmostEqual(segs[1].source_start_s, 0.0)
+        self.assertAlmostEqual(segs[1].timeline_dur_s, 6.0)
+
+        summary = cards.apply_plan_to_draft(
+            draft,
+            {
+                "style": {
+                    "title_font": "Baskerville-Bold",
+                    "detail_font": "Baskerville-SemiBoldItalic",
+                    "flankers": "—",
+                },
+                "cards": [
+                    {
+                        "kind": "char",
+                        "start": 1.0,
+                        "end": 4.5,
+                        "title": "Elijah Fairley",
+                        "detail": "Stable Hand · Former Master Horseman",
+                        "anchor": "lower-right",
+                    }
+                ],
+            },
+            snap_to_cuts=False,
+        )
+        self.assertEqual(summary["cards_applied"], 1)
+        self.assertEqual(len(draft["materials"]["texts"]), 2)
+        self.assertEqual(len(draft["materials"]["material_animations"]), 2)
+
+
+if __name__ == "__main__":
     unittest.main()

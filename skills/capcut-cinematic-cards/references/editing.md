@@ -1,87 +1,71 @@
-# Cinematic Card Design & Editorial Placement
+# AI Art Direction, Typography, Timing & Composition Guide
 
-Every rule below is derived from real production passes on macOS CapCut Desktop (`1026` Warm Heritage, `1029` Southern Copper & Warm Ivory, `1014` Warm Heritage, `1030` Christmas Hearth & Pine).
+## 1. Cinema Visual Art Direction System (Zero Canned Templates)
 
----
+Every film has its own world, lighting regime, and dramatic tension. Before writing `plan.json`, read the screenplay (`inspect` output / `sf-board.json`) and design the film's visual card language across **5 pillars**:
 
-## 1. Mandatory Pre-Task Intake
+### Pillar A: World-Specific Font Pairing Matrix (`title_font` + `detail_font`)
+Run `python3 scripts/cards.py fonts` or pass **any Google Font** (`<Family>-<Style>`) — `ensure_capcut_font()` auto-downloads and normalizes metrics (`1.20 * upm`) on the fly:
+- **Southern Gothic / Equestrian / Heritage / Family Estate Drama**:
+  - `title_font`: `PlayfairDisplay-Bold`, `DMSerifDisplay-Regular`, or `LibreBaskerville-Bold`
+  - `detail_font`: `CormorantGaramond-BoldItalic`, `PlayfairDisplay-BoldItalic`, or `InstrumentSerif-Italic`
+  - `flankers`: `"—"` (characters), `"« »"` (hero stallion / centerpiece), `"·"` (scene cards)
+- **High-Society / Luxury Dynasty / Old-Money Intrigue / Fashion**:
+  - `title_font`: `BodoniModa-Bold`, `Cinzel-Bold`, or `Didot-Bold`
+  - `detail_font`: `CormorantGaramond-SemiBoldItalic` or `PlayfairDisplay-Italic`
+  - `flankers`: `"« »"` or `"—"`
+- **Western / Heartland / Frontier / Blue-Collar Resilience**:
+  - `title_font`: `Rye-Regular`, `YoungSerif-Regular`, or `Oswald-Bold`
+  - `detail_font`: `CormorantGaramond-BoldItalic` or `CrimsonPro-SemiBoldItalic`
+  - `flankers`: `"—"` or `"·"`
+- **Military / Aviation / Naval / Tactical Thriller / Espionage**:
+  - `title_font`: `BebasNeue-Regular`, `Oswald-Bold`, `Rajdhani-Bold`, or `Cinzel-Bold` (with `title_letter_spacing: 0.04..0.06`)
+  - `detail_font`: `JetBrainsMono-SemiBold`, `SpaceGrotesk-SemiBold`, or `ChakraPetch-SemiBold`
+  - `flankers`: `"[ ]"` or `"//"`
+- **Investigative / Courtroom / True Crime / Historical Dossier**:
+  - `title_font`: `LibreBaskerville-Bold`, `DMSerifDisplay-Regular`, or `Georgia-Bold`
+  - `detail_font`: `SpecialElite-Regular`, `CourierPrime-Bold`, or `CormorantGaramond-BoldItalic`
+  - `flankers`: `"—"` or `"[ ]"`
+- **Modern Prestige A24 / Indie Drama**:
+  - `title_font`: `InstrumentSerif-Regular`, `Syne-Bold`, or `Fraunces-Bold`
+  - `detail_font`: `InstrumentSerif-Italic` or `PlusJakartaSans-SemiBold`
+  - `flankers`: `"·"` or `"—"`
 
-When a user request is underspecified (e.g., *"làm card cho prj 1030"* or *"create cards for project X"*), **always ask the user for these 3 inputs before modifying the CapCut draft**:
+### Pillar B: Multi-Span Editorial Rich Text (`styles[]` Contrast Inside Each Line)
+A single flat color across an entire line looks plain ("một màu"). `build_rich_text_content` automatically splits each text line into multi-span `styles[]` inside CapCut:
+- **Title Line (`is_title=True`)**:
+  - Honorific prefixes (`Dr. `, `Lt. `, `Capt. `, `Gen. `, `Judge `, `Sheikh `, `Sir `, `Lady `) and age/rank suffixes (`, 74`, ` — Age 15`) are automatically rendered at `0.82–0.85x` font size in `accent_color_hex`, while the core name renders at `1.0x` in `color_hex` (e.g., `Dr.` in warm ivory `#F6EFE2` at `5.78` + `Josie Calder` in gold `#F3CA6E` at `6.80`).
+- **Detail / Role / Time Line (`is_title=False`)**:
+  - Structure role and scene strings with a separator (` · `, ` — `, ` & `) or a leading status badge (`$5M Champion`, `Four-Star General`, `Founder`):
+    - Leading/trailing flankers (`—`, `« »`, `·`, `[ ]`) and the middle separator (` · `) render in `flanker_color` at `0.88x` size.
+    - The primary role/time clause (before ` · `) or leading badge renders in `detail_accent_color` (e.g. `#F2CE7E`).
+    - The secondary affiliation/context clause (after ` · `) renders in `char_detail_color` (e.g. `#F6EFE2`).
 
-1. **Kịch bản (`Screenplay / Script`)** *(Required)* — Needed for exact character names, ages, roles, locations, and chronological time jumps.
-2. **Phong cách Card mong muốn (`Card Style`)** *(Optional — auto-adjust to script genre if omitted)* — Ask if they want a specific aesthetic (e.g., Christmas, Vintage 1970s, Southern Drama, Thriller); if the user says "tuỳ chỉnh theo phim" or does not specify, automatically design the font + color palette to match the script's genre and tone.
-3. **Ảnh mẫu Subtitle (`Subtitle Reference Image`)** *(Optional — defaults to Classic White Cinematic Boxless)* — Ask if they have a reference screenshot for subtitle styling; if not specified, default to the **Classic White Cinematic Boxless** preset (`#FFFDF8` Warm Paper White, `Menlo-Regular.ttf`, `size = 4.2`, `y = -0.74`, `check_flag = 15`, no grey/black box, subtle dark stroke + drop shadow).
+### Pillar C: Character Archetype Palette Accents (Per-Card Color Storytelling)
+Instead of coloring every character identically, use per-card `title_color` and `accent_color` overrides to reflect each character's dramatic role while staying within the film's color world:
+- **Protagonist / Hero / Allies**: Warm heritage gold / amber (`#F3CA6E` / `#F2CE7E`) + warm ivory (`#F6EFE2`).
+- **Wealthy Antagonist / Syndicate / High-Society Rival**: Rose-champagne (`#F2C6CE` / `#EAB8C2`) or icy platinum (`#E2E8F0`).
+- **Enforcer / Corrupt Official / Cold Authority**: Cool steel-blue (`#B8CCE0` / `#C4D4E4`) or slate silver.
+- **Elder Matriarch / Judge / Commission Steward**: Antique champagne-gold (`#EAD49B`) + parchment (`#F7F0E4`).
 
----
+### Pillar D: Stack Order Contrast (`order` vs `scene_order`) & Staggered Entrance (`stagger_sec`)
+- Use `"order": "title-first"` for character cards (Name on top, Role underneath) and `"scene_order": "detail-first"` for scene/location cards (Time/Context kicker on top, large Location Title underneath) so the viewer's eye immediately distinguishes a character introduction from a scene transition.
+- `stagger_sec` (default `0.10s`) automatically delays the secondary line's fade-in by 3 frames after the primary line, giving every card a smooth, editorial two-beat entrance.
 
-## 2. Core Editorial Rules
+### Pillar E: Centered-Axis Symmetry (`align: "center"`)
+- `"center"` (Default & Recommended): Locks `x_title == x_detail` on the exact same vertical center axis while anchoring the outer edge of the card block at `±0.88`. Because CapCut centers each text box around `transform.x`, `"center"` guarantees 100% sub-pixel symmetry even when a short name (`"Tamarack"`) sits above a long role line (`"«  $5M Champion · Thoroughbred Stallion  »"`).
 
-### 2.1 Story-Jump Anchoring (Never Depend on Timeline Black Fades)
-- **Never** rely on CapCut timeline black fades (`fade in` / `fade out` transitions) to decide when or whether to place a Time or Location card.
-- Many cuts have no black fade even when the story jumps years, days, or hours forward, and some black fades are purely dramatic pauses within the same scene.
-- Always track **time jumps** (`SIX YEARS LATER`, `DECEMBER 24 — 3:00 PM`, `CHRISTMAS EVE — 11:45 PM`, `CHRISTMAS MORNING`, `TEN YEARS LATER`) and **location changes** (`MAIN DINING ROOM`, `24-HOUR ROADSIDE DINER`) directly from the **script + spoken dialogue cues + visual scene changes**.
+## 2. Ground-Truth Character & Scene Timing (Zero Drift)
 
-### 2.2 Default `THE END` Card
-- **Always** place a `THE END` card (`type = ending`) on the closing hold of the film by default.
-- Only omit `THE END` when the user explicitly requests no ending card (e.g., *"kịch bản này không cần làm the end"* -> `include_ending: false`).
-- Keep `THE END` centered (`x = 0.0`, `y = 0.0` or `0.02`) with a generous hold (`3.0s–4.5s`) before the timeline ends.
+- `cards.py inspect` automatically discovers `sf-board.json` from the video paths and outputs:
+  - `story_scenes`: Exact `[start_s, end_s]` and opening clip `V-NNN` for every screenplay scene (`S01..SNN`).
+  - `character_appearances`: Every character (`CHAR1..CHARN`, `AL1..ALN`) mapped to their **exact first 2 clips (`V-NNN`)**, timeline seconds `[start_s, end_s]`, and `shot_breakdown` (`goc`).
+  - `recommended_probe_windows`: Ready-to-run `--windows` string for `cards.py probe`.
+- Always pass the candidate windows to `cards.py probe` and view the contact sheets (`sheet_*.jpg`) with `read_file` to pick the exact sub-shot `[start_s, end_s]` where the character is clearly visible on camera (`2.5s–4.2s`).
+- During `apply`, **Full Sub-Shot Boundary Locking** automatically checks `ffmpeg scdet` + segment cuts in `[start_s - 0.6s, end_s + 0.6s]` and locks both `start_s >= shot_lo + 0.15s` and `end_s <= shot_hi - 0.08s` so no card ever starts before a cut or bleeds into the next shot.
 
-### 2.3 Default Native CapCut `Fade In` + `Fade Out` on Every Card
-- **Every card** (`Main`, `Detail`, and `THE END`) must have native CapCut **Fade In (`0.7s` = `700,000 us`) + Fade Out (`0.5s` = `500,000 us`)** in `materials.material_animations` (`type = "sticker_animation"`), linked via `segment.extra_material_refs = [anim_id]` with `segment.common_keyframes = []`.
-- Verified CapCut resource IDs:
-  - **In (`Fade In`)**: `id = "6724916044072227332"`, `resource_id = "6724916044072227332"`, `name = "Fade In"`, `duration = 700000`, `start = 0`.
-  - **Out (`Fade Out`)**: `id = "6724919382104871427"`, `resource_id = "6724919382104871427"`, `name = "Fade Out"`, `duration = 500000`, `start = card_duration_us - 500000`.
-- Why native `material_animations` instead of `common_keyframes` (`KFTypePositionY` / `KFTypeAlpha`):
-  - Combining `KFTypePositionY` slide-up keyframes with `KFTypeAlpha` causes cards to jump or clip near shot cuts and prevents users from tweaking fade durations in CapCut's `Animation -> In/Out` inspector tab.
+## 3. Negative-Space Placement & Visual Verification (`preview_sheet`)
 
-### 2.4 Upper-Corner Card Placement (`y > 0`) & Coexistence with Subtitles
-- Subtitles sit at the bottom center (`y = -0.74` to `-0.78`).
-- Place **Location / Time / Character cards** in the **upper corners (`y = +0.50` to `+0.76`)** or upper screen zones so they **never collide with bottom subtitles**.
-- Because upper-corner cards do not overlap bottom subtitles, **never delay a character card past the character's shot just to wait for dialogue to stop**. A character card must appear while that character's face is actually on screen.
-- When a card consists of **Main** (`Track A`) + **Detail** (`Track B`):
-  - Keep vertical gap `Δy ≈ 0.10–0.13` so multi-line Main titles never overlap Detail lines (`gap >= 30 px`).
-  - Stagger Detail entry by `+180ms` (`180,000 us`) after Main entry; end both together so they fade out cleanly as a unit.
-
-### 2.5 Shot-Boundary Verification (`ffmpeg scdet`)
-- Before finalizing any Character or Location card timestamp, run `ffmpeg -vf "scdet=threshold=12" -f null -` on the source video or inspect frames at `start + 0.3s`, `mid`, and `end - 0.3s`.
-- Ensure the card ends at least `0.15s–0.20s` before the camera cuts away to another character or angle.
-- Hold durations:
-  - **Location / Time cards**: `3.0s–4.2s`
-  - **Character introductions**: `2.6s–3.8s` (clamped to the character's actual on-screen shot)
-  - **Ending (`THE END`)**: `3.0s–4.5s`
-
----
-
-## 3. Film-Matched Card Themes & Palettes
-
-When the user does not specify a custom card style, choose or adapt the preset below that best matches the script's genre and visual palette:
-
-### 3.1 `warm-heritage` (Family / Institutional / Period Drama — e.g., `1026`, `1014`)
-- **Primary (`Main` / `THE END`)**: `Didot-Bold` (`Didot-Bold.ttf`), Warm Cream `#F6EFE2` (`[0.965, 0.937, 0.886]`), stroke `#100B08` (`width = 0.018`).
-- **Secondary (`Detail`)**: `AvenirNext-DemiBold` (`AvenirNext-DemiBold.ttf`), Burnished Gold `#E5B869` (`[0.898, 0.722, 0.412]`), stroke `#100B08` (`width = 0.016`).
-
-### 3.2 `southern-copper` (Southern / Rural / Nostalgic Drama — e.g., `1029` *The Sunday Chair*)
-- **Primary (`Main` / `THE END`)**: `Baskerville-SemiBold` (`Baskerville-SemiBold.ttf`), Warm Ivory `#FAF3E6` (`[0.980, 0.953, 0.902]`), stroke `#120C07` (`width = 0.018`).
-- **Secondary (`Detail`)**: `AvenirNext-Medium` (`AvenirNext-Medium.ttf`), Burnished Amber Gold `#E0A958` (`[0.878, 0.663, 0.345]`), stroke `#120C07` (`width = 0.016`).
-
-### 3.3 `christmas-hearth` (Holiday / Winter / Christmas Drama — e.g., `1030` *One More Bowl*)
-- **Primary (`Main`)**: `Baskerville-Bold` (`Baskerville-Bold.ttf`), Warm Candlelight Gold `#FCE8B2` (`[0.988, 0.910, 0.698]`), stroke `#1A0D08` (`width = 0.018`).
-- **Secondary (`Detail`)**: `Optima-Bold` (`Optima-Bold.ttf`), Frosted Holly Cream `#F4F7EE` (`[0.957, 0.969, 0.933]`), stroke `#1A0D08` (`width = 0.016`), prefixed with `✦  ` for festive elegance.
-
-### 3.4 `modern-thriller` (Crime / Investigative / Neo-Noir)
-- **Primary (`Main` / `THE END`)**: `AvenirNext-Bold` (`AvenirNext-Bold.ttf`), Crisp Ice White `#F2F5F8` (`[0.949, 0.961, 0.973]`), stroke `#080B10` (`width = 0.018`).
-- **Secondary (`Detail`)**: `Menlo-Bold` (`Menlo-Bold.ttf`), Steel Amber `#D9A441` (`[0.851, 0.643, 0.255]`), stroke `#080B10` (`width = 0.016`).
-
----
-
-## 4. Pixel-Accurate Overflow & Safe-Zone Math (`PIL.ImageFont`)
-
-CapCut maps font `size` on a `1920x1080` canvas at approximately:
-- `px_size ≈ size * 13.0` (e.g., `size = 6.2` -> `~81 px`; `size = 4.2` -> `~55 px`).
-- Horizontal coordinate `x` in `[-1.0, +1.0]` maps to `center_x_px = (x + 1.0) * 0.5 * 1920`.
-- Left/right edges of a centered text block (`alignment = 1`) with measured pixel width `w`:
-  - `left_px = center_x_px - w / 2`
-  - `right_px = center_x_px + w / 2`
-- **Mandatory Safe Margin**:
-  - `left_px >= 65` and `right_px <= 1855` (`>= 65 px` from both canvas edges).
-  - If a corner card placed at `x = ±0.52` has a wide title (e.g., `30 YEARS LATER — CHRISTMAS DAY` or `THE VALE HOUSEHOLD`), either wrap the title across 2 lines (`\n`) or shift `x` inward (`±0.44` to `±0.48`) until `left_px >= 65` and `right_px <= 1855`.
+- Place each card in the cleanest dark/uncluttered region of its specific frame (`lower-left`, `lower-right`, `upper-left`, `upper-right`, `mid-left`, `mid-right`, `lower-center`, `upper-center`, `center`).
+- When two named characters appear together in a two-shot, place both cards simultaneously (`lower-left` and `lower-right`); `cards.py` automatically creates `Cinematic Cards · Main 2` / `Detail 2`.
+- After running `cards.py apply`, **always open the generated `preview_sheet` (`preview_*.jpg`) with `read_file`** to verify contrast, negative space, and hierarchy with your own eyes.

@@ -1,4 +1,4 @@
 interface:
   display_name: "CapCut Cinematic Cards & Subtitles"
-  short_description: "Film-matched story-jump title cards, native Fade In/Out, default THE END, and zero-drift in-place subtitles for CapCut macOS drafts"
-  default_prompt: "Use $capcut-cinematic-cards to check required intake (script, card style, subtitle reference image), place story-jump location/time/character cards and THE END with native CapCut Fade In/Out, and style native CapCut subtitles in-place."
+  short_description: "Zero-preset AI-art-directed cinema title cards, on-demand Google Fonts, multi-span rich text, trim-immune Compound Clip timing, native Fade In/Out, and WYSIWYG frame preview for CapCut macOS"
+  default_prompt: "Use $capcut-cinematic-cards to inspect the CapCut project and screenplay, probe candidate sub-shots, art-direct bespoke multi-span typography and colors per screenplay, apply native cards and subtitles, and visually verify the preview sheet."
