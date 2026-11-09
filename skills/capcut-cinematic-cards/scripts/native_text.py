@@ -62,8 +62,8 @@ FADE_OUT_RESOURCE_ID = "6724919382104871427"
 CAPCUT_PX_PER_EM_PER_SIZE = 11.2
 DEFAULT_OUTER_EDGE_TARGET = 0.88
 MAX_SAFE_OUTER_EDGE = 0.92
-MAX_SIDE_CARD_HALF_WIDTH = 0.46
-MAX_SCENE_SIDE_CARD_HALF_WIDTH = 0.52
+MAX_SIDE_CARD_HALF_WIDTH = 0.48
+MAX_SCENE_SIDE_CARD_HALF_WIDTH = 0.56
 MAX_CENTER_CARD_HALF_WIDTH = 0.78
 
 SYSTEM_FONT_SEARCH_DIRS = [
@@ -650,21 +650,27 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
         or detail_font
     )
 
-    # Calibrated CapCut cinema ranges (Title: 5.0..8.4 default 6.6, Detail: 3.2..4.8 default 4.0, Detail <= 0.65 * Title)
-    raw_title_size = float(spec.get("title_size") or spec.get("name_size") or 6.6)
-    title_size = max(5.0, min(8.4, raw_title_size))
+    # Calibrated CapCut cinema ranges (Title: 5.0..8.6 default 6.8, Detail: 4.2..5.8 default 5.0, Detail <= 0.80 * Title)
+    raw_title_size = float(spec.get("title_size") or spec.get("name_size") or 6.8)
+    title_size = max(5.0, min(8.6, raw_title_size))
 
-    raw_detail_size = float(spec.get("detail_size") or spec.get("role_size") or 4.0)
-    detail_size = max(3.2, min(4.8, raw_detail_size, round(title_size * 0.65, 2)))
+    def _optical_boost(f_ps: str, sz: float) -> float:
+        low = f_ps.lower()
+        if "cormorant" in low or "ebgaramond" in low or "instrumentserif" in low:
+            return round(sz * 1.14, 2)
+        return sz
 
-    raw_scene_title_size = float(spec.get("scene_title_size") or spec.get("scene_size") or title_size)
-    scene_title_size = max(5.2, min(8.2, raw_scene_title_size))
-    raw_scene_detail_size = float(spec.get("scene_detail_size") or detail_size)
-    scene_detail_size = max(3.2, min(4.8, raw_scene_detail_size, round(scene_title_size * 0.65, 2)))
+    raw_detail_size = _optical_boost(detail_font, float(spec.get("detail_size") or spec.get("role_size") or 5.0))
+    detail_size = max(4.2, min(5.8, raw_detail_size, round(title_size * 0.80, 2)))
+
+    raw_scene_title_size = float(spec.get("scene_title_size") or spec.get("scene_size") or 6.6)
+    scene_title_size = max(5.2, min(8.4, raw_scene_title_size))
+    raw_scene_detail_size = _optical_boost(scene_detail_font, float(spec.get("scene_detail_size") or 5.0))
+    scene_detail_size = max(4.2, min(5.8, raw_scene_detail_size, round(scene_title_size * 0.80, 2)))
 
     raw_end_title_size = float(spec.get("end_title_size") or spec.get("end_size") or round(title_size * 1.18, 2))
     end_title_size = max(6.2, min(9.5, raw_end_title_size))
-    end_detail_size = max(3.4, min(5.2, round(detail_size * 1.08, 2)))
+    end_detail_size = max(4.4, min(6.0, round(detail_size * 1.06, 2)))
 
     char_title_color = str(
         spec.get("char_title_color")
@@ -924,7 +930,7 @@ def resolve_card_styles(card: dict[str, Any], preset: FilmCardStyle) -> tuple[Te
         ts = max(5.0, min(9.2, float(card["title_size"])))
         t_st = replace(t_st, font_size=ts)
     if card.get("detail_size") is not None:
-        ds = max(3.0, min(5.0, float(card["detail_size"]), round(t_st.font_size * 0.66, 2)))
+        ds = max(3.6, min(5.6, float(card["detail_size"]), round(t_st.font_size * 0.78, 2)))
         d_st = replace(d_st, font_size=ds)
     if card.get("title_color"):
         tc = str(card["title_color"])
@@ -1009,7 +1015,7 @@ def resolve_card_position(
         or (default_side_hw if is_side_card else MAX_CENTER_CARD_HALF_WIDTH)
     )
     if max_hw > max_allowed_hw and "scale" not in card:
-        scale = round(scale * (max_allowed_hw / max_hw), 4)
+        scale = max(0.88, round(scale * (max_allowed_hw / max_hw), 4))
         hw_title = measure_text_half_width_norm(
             title_font, title_text, title_size, scale=scale, letter_spacing=title_letter_spacing
         )
@@ -1225,7 +1231,7 @@ def compute_rich_text_spans(
         )
         if m_pre and acc_col != style.color_hex:
             p_end = m_pre.end(1)
-            spans.append((0, p_end, acc_col, round(style.font_size * 0.85, 2)))
+            spans.append((0, p_end, acc_col, style.font_size))
             lo = p_end
 
         m_suf = re.search(r"((?:,\s*\d+|\s+[—·•]\s*(?:Age\s*\d+|\d+)))$", text[lo:], re.I)
@@ -1233,14 +1239,14 @@ def compute_rich_text_spans(
             s_start = lo + m_suf.start(1)
             if s_start > lo:
                 spans.append((lo, s_start, style.color_hex, style.font_size))
-            spans.append((s_start, n, acc_col, round(style.font_size * 0.82, 2)))
+            spans.append((s_start, n, acc_col, style.font_size))
             return spans
 
         spans.append((lo, hi, style.color_hex, style.font_size))
         return spans
 
-    # Detail line
-    flk_sz = round(style.font_size * 0.88, 2)
+    # Detail line: keep 100% uniform `style.font_size` across all spans so CapCut never shrinks the layer to `styles[0].size`
+    flk_sz = style.font_size
     m_lead = re.match(r"^([—✦·•★⚓\|/«\[\s]+)", text)
     m_trail = re.search(r"([—✦·•★⚓\|/»\]\s]+)$", text)
     core_lo = m_lead.end(1) if (m_lead and any(ch not in " \t" for ch in m_lead.group(1))) else 0

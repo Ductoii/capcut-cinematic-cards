@@ -28,7 +28,7 @@ class CinematicCardsEngineTest(unittest.TestCase):
         )
         self.assertEqual(len(title_spans), 2)
         self.assertEqual(title_spans[0][2], "#F6EFE2")
-        self.assertLess(title_spans[0][3], style.character_title.font_size)
+        self.assertEqual(title_spans[0][3], style.character_title.font_size)
         self.assertEqual(title_spans[1][2], "#F3CA6E")
 
         detail_text = native_text.format_detail_with_flankers(
@@ -38,6 +38,7 @@ class CinematicCardsEngineTest(unittest.TestCase):
             detail_text, style.character_detail, is_title=False
         )
         self.assertGreaterEqual(len(detail_spans), 5)
+        self.assertEqual(detail_spans[0][3], style.character_detail.font_size)
         payload = json.loads(
             native_text.build_rich_text_content(
                 detail_text, style.character_detail, is_title=False
@@ -45,6 +46,7 @@ class CinematicCardsEngineTest(unittest.TestCase):
         )
         self.assertEqual(payload["text"], detail_text)
         self.assertEqual(len(payload["styles"]), len(detail_spans))
+        self.assertEqual(payload["styles"][0]["size"], style.character_detail.font_size)
 
     def test_centered_axis_symmetry_and_outer_edge_bounds(self):
         x_t, x_d, y_t, y_d, sc = native_text.resolve_card_position(
@@ -209,7 +211,21 @@ class CinematicCardsEngineTest(unittest.TestCase):
         )
         self.assertEqual(rec["archetype"], "coastal_lifeguard_rescue")
         self.assertEqual(rec["align"], "center")
-        self.assertEqual(rec["detail_font"], "CormorantGaramond-BoldItalic")
+        self.assertEqual(rec["title_font"], "Cinzel-Bold")
+        self.assertEqual(rec["detail_font"], "Lora-BoldItalic")
+        self.assertEqual(rec["detail_size"], 5.0)
+
+        rec_bbq = cards.recommend_style_for_screenplay(
+            {"scenes": [{"name": "BARBECUE PAVILION AT COUNTY FAIR", "sfs": [{"label": "CLEMENTINE — MASTER PITMASTER"}]}]},
+            "BBQ-TEST",
+        )
+        self.assertEqual(rec_bbq["archetype"], "rustic_heartland_americana")
+        self.assertEqual(rec_bbq["title_font"], "Fraunces-Bold")
+        self.assertEqual(rec_bbq["scene_title_font"], "Bitter-Bold")
+        self.assertEqual(rec_bbq["detail_font"], "Lora-BoldItalic")
+        self.assertEqual(rec_bbq["detail_size"], 5.0)
+        self.assertEqual(rec_bbq["scene_detail_size"], 5.0)
+        self.assertEqual(rec_bbq["align"], "center")
 
 
 if __name__ == "__main__":
