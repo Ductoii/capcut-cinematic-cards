@@ -624,12 +624,12 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
     title_font = str(
         spec.get("title_font")
         or spec.get("name_font")
-        or "Baskerville-Bold"
+        or "PlayfairDisplay-Bold"
     )
     detail_font = str(
         spec.get("detail_font")
         or spec.get("role_font")
-        or "GillSans-SemiBold"
+        or "CormorantGaramond-BoldItalic"
     )
     scene_title_font = str(
         spec.get("scene_title_font")
@@ -643,7 +643,7 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
     end_title_font = str(
         spec.get("end_title_font")
         or spec.get("end_font")
-        or title_font
+        or "Cinzel-Bold"
     )
     end_detail_font = str(
         spec.get("end_detail_font")
@@ -1074,12 +1074,14 @@ def resolve_card_position(
         x = math.copysign(max_safe_abs_x, x) if max_safe_abs_x > 0 else 0.0
 
     eff_align = align
-    if eff_align == "auto":
-        # Center both lines on the same vertical axis (`x_title == x_detail`) while keeping
-        # the outer edge of the wider line anchored at `±0.88`. This guarantees 100% sub-pixel
-        # symmetry in CapCut without glyph-overhang/padding mismatch between different fonts.
+    if eff_align in ("auto", "outer", "center", ""):
+        # Always lock both lines on the exact same vertical center axis (`x_title == x_detail`)
+        # while keeping the outer edge of the wider line anchored at `±0.88`.
+        # Because CapCut centers each text box around `transform.x` and renders multi-span sizes
+        # (`0.85x`/`0.88x`) with non-linear FreeType kerning, `x_title == x_detail` is the ONLY
+        # alignment that guarantees 100% sub-pixel symmetry in CapCut with zero crooked drift.
         eff_align = "center"
-    elif eff_align == "outer":
+    elif eff_align == "flush-outer":
         if x < -0.10:
             eff_align = "left"
         elif x > 0.10:

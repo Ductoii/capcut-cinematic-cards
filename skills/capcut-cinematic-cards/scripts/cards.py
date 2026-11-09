@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
@@ -469,7 +470,14 @@ def extract_frame_at_timeline_sec(
     )
     cache_dir = Path("/tmp/_capcut_frame_cache")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_key = f"{target_seg.clip_name}_{int(round(src_sec * 20)):05d}_{width}x{height}_g{int(include_guides)}.jpg"
+    try:
+        abs_p = os.path.abspath(target_seg.path)
+        mtime_ns = os.stat(abs_p).st_mtime_ns
+    except Exception:
+        abs_p = target_seg.path
+        mtime_ns = 0
+    path_sig = hashlib.md5(f"{abs_p}:{mtime_ns}".encode("utf-8")).hexdigest()[:10]
+    cache_key = f"{path_sig}_{target_seg.clip_name}_{int(round(src_sec * 20)):05d}_{width}x{height}_g{int(include_guides)}.jpg"
     cache_path = cache_dir / cache_key
     if cache_path.exists() and cache_path.stat().st_size > 500:
         out_jpg.parent.mkdir(parents=True, exist_ok=True)
@@ -697,17 +705,14 @@ def apply_plan_to_draft(
 
     raw_style = dict(plan.get("style") or {})
     rec_style = sp_ctx.get("recommended_style") or {}
-    # Anti-clone guard: if style is empty OR clones the Horse test template on a non-equestrian project,
-    # automatically apply the screenplay's recommended_style.
-    is_horse_clone = (
-        raw_style.get("title_font") == "PlayfairDisplay-Bold"
-        and "CormorantGaramond" in str(raw_style.get("detail_font") or "")
-        and str(raw_style.get("title_color") or "").upper() == "#F3CA6E"
-        and rec_style.get("archetype") not in ("", "equestrian_heritage_estate")
+    # Guard against industrial ALL-CAPS sans-serif / outer-align templates (`SpaceGrotesk-SemiBold` + `detail_uppercase: true`)
+    is_industrial_sans = (
+        "SpaceGrotesk" in str(raw_style.get("detail_font") or "")
+        and bool(raw_style.get("detail_uppercase"))
     )
-    if (not raw_style or is_horse_clone) and rec_style:
+    if (not raw_style or is_industrial_sans) and rec_style:
         merged_style = dict(rec_style)
-        if not is_horse_clone:
+        if not is_industrial_sans:
             merged_style.update(raw_style)
         raw_style = merged_style
 
@@ -776,7 +781,12 @@ def apply_plan_to_draft(
         str(c.get("anchor") or "").strip().lower() in ("", "auto") or c.get("auto_avoid_glare", True)
         for c in raw_cards
     )
-    tmp_fdir = Path("/tmp/_capcut_frame_cache/midpoints")
+    proj_sig = (
+        hashlib.md5(os.path.abspath(video_segs[0].path).encode("utf-8")).hexdigest()[:10]
+        if video_segs and video_segs[0].path
+        else "default"
+    )
+    tmp_fdir = Path(f"/tmp/_capcut_frame_cache/midpoints_{proj_sig}")
     if need_mid_frames:
         tmp_fdir.mkdir(parents=True, exist_ok=True)
 
@@ -843,15 +853,6 @@ def apply_plan_to_draft(
                         ):
                             card_for_pos["anchor"] = opp
                             flip_note = f"#{idx:02d} {title_text}: {req_anchor}->{opp}"
-                        else:
-                            best_up = min(
-                                ("upper-left", "upper-right"),
-                                key=lambda k: zones.get(k, {}).get("cost", 999.0),
-                            )
-                            z_up = zones.get(best_up, {})
-                            if z_up.get("cost", 999.0) < z_cur.get("cost", 0.0) - 40.0:
-                                card_for_pos["anchor"] = best_up
-                                flip_note = f"#{idx:02d} {title_text}: {req_anchor}->{best_up}"
 
         x_title, x_detail, y_main, y_detail, scale = resolve_card_position(
             card_for_pos,
@@ -1363,32 +1364,38 @@ def recommend_style_for_screenplay(sb: dict[str, Any], project_name: str = "") -
             {
                 "archetype": "coastal_lifeguard_rescue",
                 "title_font": "Cinzel-Bold",
-                "detail_font": "Optima-Bold",
-                "scene_title_font": "Futura-Bold",
-                "scene_detail_font": "AvenirNext-DemiBold",
-                "ending_title_font": "Cinzel-Bold",
-                "ending_detail_font": "Optima-Bold",
-                "title_size": 7.6,
-                "detail_size": 5.0,
-                "scene_title_size": 7.4,
-                "scene_detail_size": 5.0,
-                "ending_title_size": 10.5,
-                "ending_detail_size": 5.2,
-                "title_color": "#F4C86A",
-                "detail_color": "#D9EFF7",
-                "scene_title_color": "#7FD4E8",
-                "scene_detail_color": "#F3E9D2",
-                "ending_title_color": "#F4C86A",
-                "ending_detail_color": "#D9EFF7",
-                "stroke_color": "#091017",
-                "stroke_width": 0.04,
-                "shadow_alpha": 0.86,
-                "shadow_smoothing": 0.24,
-                "shadow_distance": 5.0,
-                "flankers": "~",
-                "scene_flankers": "•",
-                "align": "outer",
+                "detail_font": "CormorantGaramond-BoldItalic",
+                "scene_title_font": "PlayfairDisplay-Bold",
+                "scene_detail_font": "CormorantGaramond-BoldItalic",
+                "end_title_font": "Cinzel-Bold",
+                "end_detail_font": "CormorantGaramond-BoldItalic",
+                "title_size": 6.8,
+                "detail_size": 4.3,
+                "scene_title_size": 6.6,
+                "scene_detail_size": 4.1,
+                "end_title_size": 8.0,
+                "end_detail_size": 4.3,
+                "detail_uppercase": False,
+                "char_title_color": "#F3CA6E",
+                "char_detail_color": "#F6EFE2",
+                "detail_accent_color": "#F2CE7E",
+                "time_title_color": "#FBF5E8",
+                "time_detail_color": "#EFE2C8",
+                "scene_accent_color": "#F3CA6E",
+                "flanker_color": "#D8B268",
+                "stroke_color": "#0E0B08",
+                "stroke_width": 0.015,
+                "shadow_color": "#050403",
+                "shadow_alpha": 0.94,
+                "shadow_smoothing": 0.42,
+                "shadow_distance": 2.4,
+                "flankers": "—",
+                "scene_flankers": "·",
+                "stagger_sec": 0.10,
+                "align": "center",
                 "order": "title-first",
+                "scene_order": "detail-first",
+                "line_gap": 0.15,
             },
         ),
         (
@@ -1396,33 +1403,39 @@ def recommend_style_for_screenplay(sb: dict[str, Any], project_name: str = "") -
             {"stallion", "horse", "stable", "equestrian", "thoroughbred", "paddock", "bridle", "dressage", "barn", "foal", "mare", "colt"},
             {
                 "archetype": "equestrian_heritage_estate",
-                "title_font": "Baskerville-Bold",
+                "title_font": "PlayfairDisplay-Bold",
                 "detail_font": "CormorantGaramond-BoldItalic",
-                "scene_title_font": "Cinzel-Bold",
-                "scene_detail_font": "Optima-Bold",
-                "ending_title_font": "Cinzel-Bold",
-                "ending_detail_font": "CormorantGaramond-BoldItalic",
-                "title_size": 7.8,
-                "detail_size": 5.2,
-                "scene_title_size": 7.6,
-                "scene_detail_size": 5.0,
-                "ending_title_size": 10.5,
-                "ending_detail_size": 5.4,
-                "title_color": "#F3CA6E",
-                "detail_color": "#F6EFE2",
-                "scene_title_color": "#E8C374",
-                "scene_detail_color": "#DFE6ED",
-                "ending_title_color": "#F3CA6E",
-                "ending_detail_color": "#F6EFE2",
-                "stroke_color": "#101216",
-                "stroke_width": 0.04,
-                "shadow_alpha": 0.85,
-                "shadow_smoothing": 0.24,
-                "shadow_distance": 5.0,
+                "scene_title_font": "PlayfairDisplay-Bold",
+                "scene_detail_font": "CormorantGaramond-BoldItalic",
+                "end_title_font": "Cinzel-Bold",
+                "end_detail_font": "CormorantGaramond-BoldItalic",
+                "title_size": 6.8,
+                "detail_size": 4.3,
+                "scene_title_size": 6.6,
+                "scene_detail_size": 4.1,
+                "end_title_size": 8.0,
+                "end_detail_size": 4.3,
+                "detail_uppercase": False,
+                "char_title_color": "#F3CA6E",
+                "char_detail_color": "#F6EFE2",
+                "detail_accent_color": "#F2CE7E",
+                "time_title_color": "#FBF5E8",
+                "time_detail_color": "#EFE2C8",
+                "scene_accent_color": "#F3CA6E",
+                "flanker_color": "#D8B268",
+                "stroke_color": "#0E0B08",
+                "stroke_width": 0.015,
+                "shadow_color": "#050403",
+                "shadow_alpha": 0.94,
+                "shadow_smoothing": 0.42,
+                "shadow_distance": 2.4,
                 "flankers": "—",
                 "scene_flankers": "·",
+                "stagger_sec": 0.10,
                 "align": "center",
                 "order": "title-first",
+                "scene_order": "detail-first",
+                "line_gap": 0.15,
             },
         ),
         (
@@ -1430,33 +1443,39 @@ def recommend_style_for_screenplay(sb: dict[str, Any], project_name: str = "") -
             {"courtroom", "lawyer", "attorney", "judge", "deposition", "boardroom", "ceo", "executive", "penthouse", "billionaire", "trust", "inheritance", "hospital", "surgeon", "clinic"},
             {
                 "archetype": "legal_corporate_dynasty",
-                "title_font": "Didot-Bold",
-                "detail_font": "AvenirNext-DemiBold",
-                "scene_title_font": "Optima-Bold",
-                "scene_detail_font": "GillSans-SemiBold",
-                "ending_title_font": "Didot-Bold",
-                "ending_detail_font": "AvenirNext-DemiBold",
-                "title_size": 7.8,
-                "detail_size": 4.9,
-                "scene_title_size": 7.4,
-                "scene_detail_size": 4.9,
-                "ending_title_size": 10.5,
-                "ending_detail_size": 5.2,
-                "title_color": "#EED484",
-                "detail_color": "#E4EBF2",
-                "scene_title_color": "#D8DEE9",
-                "scene_detail_color": "#E5C07B",
-                "ending_title_color": "#EED484",
-                "ending_detail_color": "#E4EBF2",
-                "stroke_color": "#0B0E14",
-                "stroke_width": 0.04,
-                "shadow_alpha": 0.86,
-                "shadow_smoothing": 0.24,
-                "shadow_distance": 5.0,
-                "flankers": "|",
-                "scene_flankers": "—",
-                "align": "outer",
+                "title_font": "PlayfairDisplay-Bold",
+                "detail_font": "CormorantGaramond-BoldItalic",
+                "scene_title_font": "PlayfairDisplay-Bold",
+                "scene_detail_font": "CormorantGaramond-BoldItalic",
+                "end_title_font": "Cinzel-Bold",
+                "end_detail_font": "CormorantGaramond-BoldItalic",
+                "title_size": 6.8,
+                "detail_size": 4.3,
+                "scene_title_size": 6.6,
+                "scene_detail_size": 4.1,
+                "end_title_size": 8.0,
+                "end_detail_size": 4.3,
+                "detail_uppercase": False,
+                "char_title_color": "#F3CA6E",
+                "char_detail_color": "#F6EFE2",
+                "detail_accent_color": "#F2CE7E",
+                "time_title_color": "#FBF5E8",
+                "time_detail_color": "#EFE2C8",
+                "scene_accent_color": "#F3CA6E",
+                "flanker_color": "#D8B268",
+                "stroke_color": "#0E0B08",
+                "stroke_width": 0.015,
+                "shadow_color": "#050403",
+                "shadow_alpha": 0.94,
+                "shadow_smoothing": 0.42,
+                "shadow_distance": 2.4,
+                "flankers": "—",
+                "scene_flankers": "·",
+                "stagger_sec": 0.10,
+                "align": "center",
                 "order": "title-first",
+                "scene_order": "detail-first",
+                "line_gap": 0.15,
             },
         ),
         (
@@ -1464,33 +1483,39 @@ def recommend_style_for_screenplay(sb: dict[str, Any], project_name: str = "") -
             {"military", "colonel", "general", "sergeant", "veteran", "tactical", "hangar", "radar", "bunker", "precinct", "detective", "federal", "swat", "convoy"},
             {
                 "archetype": "military_tactical_thriller",
-                "title_font": "Futura-CondensedExtraBold",
-                "detail_font": "Menlo-Bold",
-                "scene_title_font": "AvenirNextCondensed-Heavy",
-                "scene_detail_font": "Menlo-Bold",
-                "ending_title_font": "Futura-CondensedExtraBold",
-                "ending_detail_font": "Menlo-Bold",
-                "title_size": 7.8,
-                "detail_size": 4.6,
-                "scene_title_size": 7.6,
-                "scene_detail_size": 4.6,
-                "ending_title_size": 10.5,
-                "ending_detail_size": 5.0,
-                "title_color": "#E8EEF2",
-                "detail_color": "#94D2BD",
-                "scene_title_color": "#F2B84B",
-                "scene_detail_color": "#C9D6DF",
-                "ending_title_color": "#E8EEF2",
-                "ending_detail_color": "#94D2BD",
-                "stroke_color": "#080B0E",
-                "stroke_width": 0.04,
-                "shadow_alpha": 0.88,
-                "shadow_smoothing": 0.24,
-                "shadow_distance": 5.0,
-                "flankers": "::",
-                "scene_flankers": "/",
-                "align": "outer",
-                "order": "detail-first",
+                "title_font": "Cinzel-Bold",
+                "detail_font": "CormorantGaramond-BoldItalic",
+                "scene_title_font": "Cinzel-Bold",
+                "scene_detail_font": "CormorantGaramond-BoldItalic",
+                "end_title_font": "Cinzel-Bold",
+                "end_detail_font": "CormorantGaramond-BoldItalic",
+                "title_size": 6.8,
+                "detail_size": 4.3,
+                "scene_title_size": 6.6,
+                "scene_detail_size": 4.1,
+                "end_title_size": 8.0,
+                "end_detail_size": 4.3,
+                "detail_uppercase": False,
+                "char_title_color": "#F3CA6E",
+                "char_detail_color": "#F6EFE2",
+                "detail_accent_color": "#F2CE7E",
+                "time_title_color": "#FBF5E8",
+                "time_detail_color": "#EFE2C8",
+                "scene_accent_color": "#F3CA6E",
+                "flanker_color": "#D8B268",
+                "stroke_color": "#0E0B08",
+                "stroke_width": 0.015,
+                "shadow_color": "#050403",
+                "shadow_alpha": 0.94,
+                "shadow_smoothing": 0.42,
+                "shadow_distance": 2.4,
+                "flankers": "—",
+                "scene_flankers": "·",
+                "stagger_sec": 0.10,
+                "align": "center",
+                "order": "title-first",
+                "scene_order": "detail-first",
+                "line_gap": 0.15,
             },
         ),
         (
@@ -1498,67 +1523,79 @@ def recommend_style_for_screenplay(sb: dict[str, Any], project_name: str = "") -
             {"gala", "ballroom", "symphony", "violin", "piano", "opera", "couture", "auction", "gallery", "chandelier", "conservatory", "banquet"},
             {
                 "archetype": "high_society_gala_drama",
-                "title_font": "BodoniSvtyTwoITCTT-Bold",
-                "detail_font": "Optima-Bold",
-                "scene_title_font": "Didot-Bold",
-                "scene_detail_font": "AvenirNext-DemiBold",
-                "ending_title_font": "BodoniSvtyTwoITCTT-Bold",
-                "ending_detail_font": "Optima-Bold",
-                "title_size": 7.8,
-                "detail_size": 5.0,
-                "scene_title_size": 7.6,
-                "scene_detail_size": 5.0,
-                "ending_title_size": 10.5,
-                "ending_detail_size": 5.2,
-                "title_color": "#F5D38C",
-                "detail_color": "#F4EFFA",
-                "scene_title_color": "#E2C2FF",
-                "scene_detail_color": "#F7EBD9",
-                "ending_title_color": "#F5D38C",
-                "ending_detail_color": "#F4EFFA",
-                "stroke_color": "#0E0C14",
-                "stroke_width": 0.04,
-                "shadow_alpha": 0.86,
-                "shadow_smoothing": 0.24,
-                "shadow_distance": 5.0,
-                "flankers": "◇",
+                "title_font": "PlayfairDisplay-Bold",
+                "detail_font": "CormorantGaramond-BoldItalic",
+                "scene_title_font": "PlayfairDisplay-Bold",
+                "scene_detail_font": "CormorantGaramond-BoldItalic",
+                "end_title_font": "Cinzel-Bold",
+                "end_detail_font": "CormorantGaramond-BoldItalic",
+                "title_size": 6.8,
+                "detail_size": 4.3,
+                "scene_title_size": 6.6,
+                "scene_detail_size": 4.1,
+                "end_title_size": 8.0,
+                "end_detail_size": 4.3,
+                "detail_uppercase": False,
+                "char_title_color": "#F3CA6E",
+                "char_detail_color": "#F6EFE2",
+                "detail_accent_color": "#F2CE7E",
+                "time_title_color": "#FBF5E8",
+                "time_detail_color": "#EFE2C8",
+                "scene_accent_color": "#F3CA6E",
+                "flanker_color": "#D8B268",
+                "stroke_color": "#0E0B08",
+                "stroke_width": 0.015,
+                "shadow_color": "#050403",
+                "shadow_alpha": 0.94,
+                "shadow_smoothing": 0.42,
+                "shadow_distance": 2.4,
+                "flankers": "—",
                 "scene_flankers": "·",
+                "stagger_sec": 0.10,
                 "align": "center",
                 "order": "title-first",
+                "scene_order": "detail-first",
+                "line_gap": 0.15,
             },
         ),
         (
             "rustic_heartland_americana",
-            {"diner", "farmhouse", "tractor", "sheriff", "county", "porch", "bakery", "orchard", "harvest", "mill", "workshop", "mechanic", "truck", "cafe"},
+            {"diner", "farmhouse", "tractor", "sheriff", "county", "porch", "bakery", "orchard", "harvest", "mill", "workshop", "mechanic", "truck", "cafe", "ribs", "smoker", "pitmaster", "barbecue"},
             {
                 "archetype": "rustic_heartland_americana",
-                "title_font": "Charter-Black",
-                "detail_font": "GillSans-SemiBold",
-                "scene_title_font": "Copperplate-Bold",
-                "scene_detail_font": "Optima-Bold",
-                "ending_title_font": "Charter-Black",
-                "ending_detail_font": "GillSans-SemiBold",
-                "title_size": 7.6,
-                "detail_size": 5.0,
-                "scene_title_size": 7.4,
-                "scene_detail_size": 5.0,
-                "ending_title_size": 10.5,
-                "ending_detail_size": 5.2,
-                "title_color": "#F4B860",
-                "detail_color": "#F7EDE2",
-                "scene_title_color": "#E6CCB2",
-                "scene_detail_color": "#DDB892",
-                "ending_title_color": "#F4B860",
-                "ending_detail_color": "#F7EDE2",
-                "stroke_color": "#120E0A",
-                "stroke_width": 0.04,
-                "shadow_alpha": 0.86,
-                "shadow_smoothing": 0.24,
-                "shadow_distance": 5.0,
-                "flankers": "•",
-                "scene_flankers": "—",
-                "align": "outer",
+                "title_font": "PlayfairDisplay-Bold",
+                "detail_font": "CormorantGaramond-BoldItalic",
+                "scene_title_font": "PlayfairDisplay-Bold",
+                "scene_detail_font": "CormorantGaramond-BoldItalic",
+                "end_title_font": "Cinzel-Bold",
+                "end_detail_font": "CormorantGaramond-BoldItalic",
+                "title_size": 6.8,
+                "detail_size": 4.3,
+                "scene_title_size": 6.6,
+                "scene_detail_size": 4.1,
+                "end_title_size": 8.0,
+                "end_detail_size": 4.3,
+                "detail_uppercase": False,
+                "char_title_color": "#F3CA6E",
+                "char_detail_color": "#F6EFE2",
+                "detail_accent_color": "#F2CE7E",
+                "time_title_color": "#FBF5E8",
+                "time_detail_color": "#EFE2C8",
+                "scene_accent_color": "#F3CA6E",
+                "flanker_color": "#D8B268",
+                "stroke_color": "#0E0B08",
+                "stroke_width": 0.015,
+                "shadow_color": "#050403",
+                "shadow_alpha": 0.94,
+                "shadow_smoothing": 0.42,
+                "shadow_distance": 2.4,
+                "flankers": "—",
+                "scene_flankers": "·",
+                "stagger_sec": 0.10,
+                "align": "center",
                 "order": "title-first",
+                "scene_order": "detail-first",
+                "line_gap": 0.15,
             },
         ),
     ]
@@ -1576,33 +1613,39 @@ def recommend_style_for_screenplay(sb: dict[str, Any], project_name: str = "") -
 
     return {
         "archetype": "modern_prestige_drama",
-        "title_font": "Optima-ExtraBlack",
-        "detail_font": "AvenirNext-DemiBold",
-        "scene_title_font": "Cinzel-Bold",
-        "scene_detail_font": "GillSans-SemiBold",
-        "ending_title_font": "Cinzel-Bold",
-        "ending_detail_font": "Optima-Bold",
-        "title_size": 7.6,
-        "detail_size": 5.0,
-        "scene_title_size": 7.4,
-        "scene_detail_size": 5.0,
-        "ending_title_size": 10.5,
-        "ending_detail_size": 5.2,
-        "title_color": "#F2CC76",
-        "detail_color": "#EAEFF5",
-        "scene_title_color": "#D4E4F7",
-        "scene_detail_color": "#F2DFB6",
-        "ending_title_color": "#F2CC76",
-        "ending_detail_color": "#EAEFF5",
-        "stroke_color": "#0C0F14",
-        "stroke_width": 0.04,
-        "shadow_alpha": 0.86,
-        "shadow_smoothing": 0.24,
-        "shadow_distance": 5.0,
+        "title_font": "PlayfairDisplay-Bold",
+        "detail_font": "CormorantGaramond-BoldItalic",
+        "scene_title_font": "PlayfairDisplay-Bold",
+        "scene_detail_font": "CormorantGaramond-BoldItalic",
+        "end_title_font": "Cinzel-Bold",
+        "end_detail_font": "CormorantGaramond-BoldItalic",
+        "title_size": 6.8,
+        "detail_size": 4.3,
+        "scene_title_size": 6.6,
+        "scene_detail_size": 4.1,
+        "end_title_size": 8.0,
+        "end_detail_size": 4.3,
+        "detail_uppercase": False,
+        "char_title_color": "#F3CA6E",
+        "char_detail_color": "#F6EFE2",
+        "detail_accent_color": "#F2CE7E",
+        "time_title_color": "#FBF5E8",
+        "time_detail_color": "#EFE2C8",
+        "scene_accent_color": "#F3CA6E",
+        "flanker_color": "#D8B268",
+        "stroke_color": "#0E0B08",
+        "stroke_width": 0.015,
+        "shadow_color": "#050403",
+        "shadow_alpha": 0.94,
+        "shadow_smoothing": 0.42,
+        "shadow_distance": 2.4,
         "flankers": "—",
-        "scene_flankers": "•",
-        "align": "outer",
+        "scene_flankers": "·",
+        "stagger_sec": 0.10,
+        "align": "center",
         "order": "title-first",
+        "scene_order": "detail-first",
+        "line_gap": 0.15,
     }
 
 
@@ -1884,7 +1927,10 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
     out_dir = Path(os.path.expanduser(args.out))
     out_dir.mkdir(parents=True, exist_ok=True)
+    for old_f in list(out_dir.glob("sheet_*.jpg")) + list(out_dir.glob("probe_batch_*.jpg")):
+        old_f.unlink(missing_ok=True)
     frames_dir = out_dir / "frames"
+    shutil.rmtree(frames_dir, ignore_errors=True)
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     raw_windows = [w.strip() for w in (args.windows or "").split(",") if w.strip()]
@@ -2045,7 +2091,10 @@ def render_preview_sheet(
     if not video_segs or not applied_cards:
         return None, []
     tmp_dir = out_sheet_path.parent / f"_preview_frames_{out_sheet_path.stem}"
+    shutil.rmtree(tmp_dir, ignore_errors=True)
     tmp_dir.mkdir(parents=True, exist_ok=True)
+    for old_p in out_sheet_path.parent.glob(f"{out_sheet_path.stem}_p*.jpg"):
+        old_p.unlink(missing_ok=True)
 
     card_specs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for c in applied_cards:

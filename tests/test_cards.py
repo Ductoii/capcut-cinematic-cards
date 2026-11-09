@@ -208,7 +208,8 @@ class CinematicCardsEngineTest(unittest.TestCase):
             "LIFEGUARD-TEST",
         )
         self.assertEqual(rec["archetype"], "coastal_lifeguard_rescue")
-        self.assertEqual(rec["align"], "outer")
+        self.assertEqual(rec["align"], "center")
+        self.assertEqual(rec["detail_font"], "CormorantGaramond-BoldItalic")
 
 
 if __name__ == "__main__":

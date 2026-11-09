@@ -58,9 +58,9 @@ Instead of coloring every character identically, use per-card `title_color` and 
 - Use `"order": "title-first"` for character cards (Name on top, Role underneath) and `"scene_order": "detail-first"` (or `"title-first"` depending on the archetype) for scene/location cards so the viewer's eye immediately distinguishes a character introduction from a scene transition.
 - `stagger_sec` (default `0.10s`) automatically delays the secondary line's fade-in by 3 frames after the primary line, giving every card a smooth, editorial two-beat entrance.
 
-### Pillar E: Block Alignment (`align: "outer"` vs `"center"`)
-- `"outer"` (Default for Coastal, Legal, Military, Noir, Heartland, and Modern Prestige archetypes): Aligns left-side cards flush-left (`-0.88`) and right-side cards flush-right (`+0.88`) using exact `fontTools` glyph advance widths.
-- `"center"` (Used for Classical Equestrian / High-Society Gala archetypes): Centers both lines on a shared vertical axis while anchoring the outer edge of the card block at `±0.88`.
+### Pillar E: Centered-Axis Symmetry (`align: "center"`)
+- `"center"` (Default & Enforced for `"auto"` / `"outer"` / `"center"`): Locks `x_title == x_detail` on the exact same vertical center axis while anchoring the outer edge of the card block at `±0.88`. Because CapCut center-anchors each text box around `transform.x` and renders multi-span sizes (`0.85x`/`0.88x`) with non-linear FreeType kerning, `x_title == x_detail` is the ONLY alignment that guarantees 100% sub-pixel symmetry in CapCut without crooked horizontal drift.
+- Always pair a Classical Editorial Serif Title (`PlayfairDisplay-Bold`, `Cinzel-Bold`, `Baskerville-Bold`, `BodoniModa-Bold`, `DMSerifDisplay-Regular`) with a Mixed-Case Calligraphic Italic Serif Detail (`CormorantGaramond-BoldItalic`, `CormorantGaramond-SemiBoldItalic`, `InstrumentSerif-Italic`, `detail_uppercase: false`) and cinema flankers (`"—"` for characters, `"·"` for scenes). Never use ALL-CAPS sans-serif (`SpaceGrotesk-SemiBold` + `detail_uppercase: true`) or `[ ]` brackets on narrative drama cards.
 
 ## 2. Ground-Truth Character & Scene Timing (Zero Drift)
 
