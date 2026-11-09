@@ -14,19 +14,24 @@ hierarchy, colors, and placement for each screenplay, while this engine guarante
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import difflib
 import json
 import math
 import os
 import re
 import shutil
+import threading
 import urllib.request
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from fontTools.ttLib import TTCollection, TTFont
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+DEFAULT_MAX_WORKERS = min(16, max(8, (os.cpu_count() or 8) * 2))
 
 CAPCUT_SANDBOX_FONTS_DIR = Path(
     os.path.expanduser(
@@ -69,7 +74,12 @@ SYSTEM_FONT_SEARCH_DIRS = [
 ]
 
 _SYSTEM_FONT_INDEX: dict[str, tuple[Path, int | None, str]] | None = None
+_SYSTEM_FONT_INDEX_LOCK = threading.Lock()
+_ENSURED_FONT_CACHE: dict[str, str] = {}
+_ENSURED_FONT_LOCKS: dict[str, threading.Lock] = {}
+_ENSURED_FONT_META_LOCK = threading.Lock()
 _TTFONT_METRICS_CACHE: dict[str, tuple[int, dict[int, str], dict[str, tuple[int, int]]]] = {}
+_TTFONT_METRICS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -114,6 +124,8 @@ class FilmCardStyle:
     scene_order: str = "title-first"
     flankers: str = ""
     scene_flankers: str = ""
+    title_uppercase: bool = False
+    detail_uppercase: bool = False
 
 
 def _uid() -> str:
@@ -165,13 +177,20 @@ def _build_system_font_index() -> dict[str, tuple[Path, int | None, str]]:
     if _SYSTEM_FONT_INDEX is not None:
         return _SYSTEM_FONT_INDEX
 
-    index: dict[str, tuple[Path, int | None, str]] = {}
-    for folder in SYSTEM_FONT_SEARCH_DIRS:
-        if not folder.exists():
-            continue
-        for p in folder.iterdir():
-            if p.name.startswith("."):
+    with _SYSTEM_FONT_INDEX_LOCK:
+        if _SYSTEM_FONT_INDEX is not None:
+            return _SYSTEM_FONT_INDEX
+
+        font_files: list[Path] = []
+        for folder in SYSTEM_FONT_SEARCH_DIRS:
+            if not folder.exists():
                 continue
+            for p in folder.iterdir():
+                if not p.name.startswith(".") and p.suffix.lower() in (".ttf", ".otf", ".ttc"):
+                    font_files.append(p)
+
+        def _scan_font_file(p: Path) -> list[tuple[str, tuple[Path, int | None, str], bool]]:
+            entries: list[tuple[str, tuple[Path, int | None, str], bool]] = []
             suf = p.suffix.lower()
             try:
                 if suf in (".ttf", ".otf"):
@@ -179,10 +198,10 @@ def _build_system_font_index() -> dict[str, tuple[Path, int | None, str]]:
                     ps = _get_name_record(tt, 6)
                     fam = _get_name_record(tt, 1) or ps or p.stem
                     if ps and not ps.startswith("."):
-                        index[ps] = (p, None, fam)
-                        index.setdefault(ps.lower(), (p, None, fam))
+                        entries.append((ps, (p, None, fam), True))
+                        entries.append((ps.lower(), (p, None, fam), False))
                         if fam:
-                            index.setdefault(fam.lower(), (p, None, fam))
+                            entries.append((fam.lower(), (p, None, fam), False))
                     tt.close()
                 elif suf == ".ttc":
                     ttc = TTCollection(str(p), lazy=True)
@@ -190,16 +209,24 @@ def _build_system_font_index() -> dict[str, tuple[Path, int | None, str]]:
                         ps = _get_name_record(tt, 6)
                         fam = _get_name_record(tt, 1) or ps or p.stem
                         if ps and not ps.startswith("."):
-                            index[ps] = (p, idx, fam)
-                            index.setdefault(ps.lower(), (p, idx, fam))
-                            if fam and fam.lower() not in index:
-                                index[fam.lower()] = (p, idx, fam)
+                            entries.append((ps, (p, idx, fam), True))
+                            entries.append((ps.lower(), (p, idx, fam), False))
+                            if fam:
+                                entries.append((fam.lower(), (p, idx, fam), False))
                     ttc.close()
             except Exception:
-                continue
+                pass
+            return entries
 
-    _SYSTEM_FONT_INDEX = index
-    return index
+        index: dict[str, tuple[Path, int | None, str]] = {}
+        with ThreadPoolExecutor(max_workers=DEFAULT_MAX_WORKERS) as pool:
+            for file_entries in pool.map(_scan_font_file, font_files):
+                for key, val, overwrite in file_entries:
+                    if overwrite or key not in index:
+                        index[key] = val
+
+        _SYSTEM_FONT_INDEX = index
+        return index
 
 
 def list_available_fonts() -> dict[str, Any]:
@@ -419,66 +446,116 @@ def _copy_if_different(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         try:
-            if os.path.samefile(src, dst):
+            if os.path.samefile(src, dst) or (
+                src.stat().st_size == dst.stat().st_size and src.stat().st_size > 1000
+            ):
                 return
         except OSError:
             pass
     shutil.copyfile(str(src), str(dst))
 
 
+def _get_font_lock(clean_ps: str) -> threading.Lock:
+    with _ENSURED_FONT_META_LOCK:
+        lk = _ENSURED_FONT_LOCKS.get(clean_ps)
+        if lk is None:
+            lk = threading.Lock()
+            _ENSURED_FONT_LOCKS[clean_ps] = lk
+        return lk
+
+
 def ensure_capcut_font(font_postscript: str) -> str:
     """
     Ensure `<font_postscript>.ttf` exists in both CapCut sandbox `Fonts/` and `~/Library/Fonts/`
     with normalized vertical metrics (1.20 * upm) so CapCut renders all fonts at an exact,
-    predictable scale. If the font is not installed locally on macOS, automatically fetches it
-    from Google Fonts on the fly.
+    predictable scale. Thread-safe and cached in memory so repeated calls across worker threads
+    never rewrite or re-copy the same font file.
     """
-    CAPCUT_SANDBOX_FONTS_DIR.mkdir(parents=True, exist_ok=True)
-    USER_FONTS_DIR.mkdir(parents=True, exist_ok=True)
-
     raw_spec = (font_postscript or "Georgia-Bold").strip()
+    cached = _ENSURED_FONT_CACHE.get(raw_spec)
+    if cached:
+        return cached
+
     _, _, _, canonical_ps = _parse_google_font_spec(raw_spec)
     clean_ps = raw_spec if ("-" in raw_spec and ":" not in raw_spec and " " not in raw_spec) else canonical_ps
-    sandbox_ttf = CAPCUT_SANDBOX_FONTS_DIR / f"{clean_ps}.ttf"
-    user_ttf = USER_FONTS_DIR / f"{clean_ps}.ttf"
+    cached_clean = _ENSURED_FONT_CACHE.get(clean_ps)
+    if cached_clean:
+        _ENSURED_FONT_CACHE[raw_spec] = cached_clean
+        return cached_clean
 
-    if sandbox_ttf.exists():
-        _normalize_ttf_vertical_metrics(sandbox_ttf, force_postscript_name=clean_ps)
-        _copy_if_different(sandbox_ttf, user_ttf)
-        return str(sandbox_ttf)
+    with _get_font_lock(clean_ps):
+        cached_clean = _ENSURED_FONT_CACHE.get(clean_ps)
+        if cached_clean:
+            _ENSURED_FONT_CACHE[raw_spec] = cached_clean
+            return cached_clean
 
-    idx = _build_system_font_index()
-    match = idx.get(clean_ps) or idx.get(clean_ps.lower()) or idx.get(raw_spec.replace(" ", "-").lower())
+        CAPCUT_SANDBOX_FONTS_DIR.mkdir(parents=True, exist_ok=True)
+        USER_FONTS_DIR.mkdir(parents=True, exist_ok=True)
+        sandbox_ttf = CAPCUT_SANDBOX_FONTS_DIR / f"{clean_ps}.ttf"
+        user_ttf = USER_FONTS_DIR / f"{clean_ps}.ttf"
 
-    if match:
-        src_path, ttc_idx, _ = match
-        if ttc_idx is not None:
-            ttc = TTCollection(str(src_path))
-            ttc.fonts[ttc_idx].save(str(sandbox_ttf))
-            ttc.close()
-        else:
-            _copy_if_different(src_path, sandbox_ttf)
-        _normalize_ttf_vertical_metrics(sandbox_ttf, force_postscript_name=clean_ps)
-        _copy_if_different(sandbox_ttf, user_ttf)
-        return str(sandbox_ttf)
+        if sandbox_ttf.exists() and sandbox_ttf.stat().st_size > 1000:
+            if not user_ttf.exists() or user_ttf.stat().st_size != sandbox_ttf.stat().st_size:
+                _normalize_ttf_vertical_metrics(sandbox_ttf, force_postscript_name=clean_ps)
+                _copy_if_different(sandbox_ttf, user_ttf)
+            res = str(sandbox_ttf)
+            _ENSURED_FONT_CACHE[clean_ps] = res
+            _ENSURED_FONT_CACHE[raw_spec] = res
+            return res
 
-    # Not in local macOS system fonts -> auto-download from Google Fonts!
-    gf_path = fetch_google_font(raw_spec)
-    if gf_path and os.path.exists(gf_path):
-        if Path(gf_path) != sandbox_ttf:
-            _copy_if_different(Path(gf_path), sandbox_ttf)
+        idx = _build_system_font_index()
+        match = idx.get(clean_ps) or idx.get(clean_ps.lower()) or idx.get(raw_spec.replace(" ", "-").lower())
+
+        if match:
+            src_path, ttc_idx, _ = match
+            if ttc_idx is not None:
+                ttc = TTCollection(str(src_path))
+                ttc.fonts[ttc_idx].save(str(sandbox_ttf))
+                ttc.close()
+            else:
+                _copy_if_different(src_path, sandbox_ttf)
             _normalize_ttf_vertical_metrics(sandbox_ttf, force_postscript_name=clean_ps)
             _copy_if_different(sandbox_ttf, user_ttf)
-        return str(sandbox_ttf)
+            res = str(sandbox_ttf)
+            _ENSURED_FONT_CACHE[clean_ps] = res
+            _ENSURED_FONT_CACHE[raw_spec] = res
+            return res
 
-    # Final fallback if offline and font unknown
-    fb = idx.get("georgia-bold")
-    if fb:
-        src_path, ttc_idx, _ = fb
-        _copy_if_different(src_path, sandbox_ttf)
-        _normalize_ttf_vertical_metrics(sandbox_ttf, force_postscript_name=clean_ps)
-        _copy_if_different(sandbox_ttf, user_ttf)
-    return str(sandbox_ttf)
+        # Not in local macOS system fonts -> auto-download from Google Fonts!
+        gf_path = fetch_google_font(raw_spec)
+        if gf_path and os.path.exists(gf_path):
+            if Path(gf_path) != sandbox_ttf:
+                _copy_if_different(Path(gf_path), sandbox_ttf)
+                _normalize_ttf_vertical_metrics(sandbox_ttf, force_postscript_name=clean_ps)
+                _copy_if_different(sandbox_ttf, user_ttf)
+            res = str(sandbox_ttf)
+            _ENSURED_FONT_CACHE[clean_ps] = res
+            _ENSURED_FONT_CACHE[raw_spec] = res
+            return res
+
+        # Final fallback if offline and font unknown
+        fb = idx.get("georgia-bold")
+        if fb:
+            src_path, ttc_idx, _ = fb
+            _copy_if_different(src_path, sandbox_ttf)
+            _normalize_ttf_vertical_metrics(sandbox_ttf, force_postscript_name=clean_ps)
+            _copy_if_different(sandbox_ttf, user_ttf)
+        res = str(sandbox_ttf)
+        _ENSURED_FONT_CACHE[clean_ps] = res
+        _ENSURED_FONT_CACHE[raw_spec] = res
+        return res
+
+
+def ensure_capcut_fonts_parallel(font_specs: Iterable[str]) -> dict[str, str]:
+    """Resolve, normalize, and install multiple font specs concurrently across worker threads."""
+    unique_specs = [s.strip() for s in dict.fromkeys(font_specs) if s and s.strip()]
+    if not unique_specs:
+        return {}
+    if len(unique_specs) == 1:
+        return {unique_specs[0]: ensure_capcut_font(unique_specs[0])}
+    with ThreadPoolExecutor(max_workers=min(DEFAULT_MAX_WORKERS, len(unique_specs))) as pool:
+        paths = list(pool.map(ensure_capcut_font, unique_specs))
+    return dict(zip(unique_specs, paths))
 
 
 def measure_text_em_width(font_postscript: str, text: str) -> float:
@@ -487,18 +564,23 @@ def measure_text_em_width(font_postscript: str, text: str) -> float:
         return 0.0
     ttf_path = ensure_capcut_font(font_postscript)
     lines = [ln for ln in text.splitlines() if ln] or [text]
-    if ttf_path not in _TTFONT_METRICS_CACHE:
-        try:
-            tt = TTFont(ttf_path, lazy=True)
-            upm = int(tt["head"].unitsPerEm)
-            cmap = dict(tt.getBestCmap() or {})
-            hmtx = dict(tt["hmtx"].metrics)
-            tt.close()
-            _TTFONT_METRICS_CACHE[ttf_path] = (upm, cmap, hmtx)
-        except Exception:
-            return max(len(ln) * 0.56 for ln in lines)
+    metrics = _TTFONT_METRICS_CACHE.get(ttf_path)
+    if metrics is None:
+        with _TTFONT_METRICS_LOCK:
+            metrics = _TTFONT_METRICS_CACHE.get(ttf_path)
+            if metrics is None:
+                try:
+                    tt = TTFont(ttf_path, lazy=True)
+                    upm = int(tt["head"].unitsPerEm)
+                    cmap = dict(tt.getBestCmap() or {})
+                    hmtx = dict(tt["hmtx"].metrics)
+                    tt.close()
+                    metrics = (upm, cmap, hmtx)
+                    _TTFONT_METRICS_CACHE[ttf_path] = metrics
+                except Exception:
+                    return max(len(ln) * 0.56 for ln in lines)
 
-    upm, cmap, hmtx = _TTFONT_METRICS_CACHE[ttf_path]
+    upm, cmap, hmtx = metrics
     max_em = 0.0
     for ln in lines:
         total = 0.0
@@ -753,10 +835,13 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
         scene_order=str(spec.get("scene_order") or spec.get("order") or "title-first").strip().lower(),
         flankers=str(spec.get("flankers") or "").strip(),
         scene_flankers=str(spec.get("scene_flankers") if spec.get("scene_flankers") is not None else (spec.get("flankers") or "")).strip(),
+        title_uppercase=bool(spec.get("title_uppercase", False)),
+        detail_uppercase=bool(spec.get("detail_uppercase", False)),
     )
 
 
 _FONT_CMAP_CACHE: dict[str, set[int]] = {}
+_FONT_CMAP_LOCK = threading.Lock()
 
 
 def font_supports_chars(font_postscript: str, chars: str) -> bool:
@@ -765,15 +850,18 @@ def font_supports_chars(font_postscript: str, chars: str) -> bool:
         return True
     cmap = _FONT_CMAP_CACHE.get(font_postscript)
     if cmap is None:
-        ttf_path = ensure_capcut_font(font_postscript)
-        cmap = set()
-        if ttf_path and Path(ttf_path).exists():
-            try:
-                with TTFont(ttf_path) as tt:
-                    cmap = set((tt.getBestCmap() or {}).keys())
-            except Exception:
+        with _FONT_CMAP_LOCK:
+            cmap = _FONT_CMAP_CACHE.get(font_postscript)
+            if cmap is None:
+                ttf_path = ensure_capcut_font(font_postscript)
                 cmap = set()
-        _FONT_CMAP_CACHE[font_postscript] = cmap
+                if ttf_path and Path(ttf_path).exists():
+                    try:
+                        with TTFont(ttf_path) as tt:
+                            cmap = set((tt.getBestCmap() or {}).keys())
+                    except Exception:
+                        cmap = set()
+                _FONT_CMAP_CACHE[font_postscript] = cmap
     if not cmap:
         return True
     return all(ord(c) in cmap for c in chars if not c.isspace())
@@ -991,6 +1079,13 @@ def resolve_card_position(
         # the outer edge of the wider line anchored at `±0.88`. This guarantees 100% sub-pixel
         # symmetry in CapCut without glyph-overhang/padding mismatch between different fonts.
         eff_align = "center"
+    elif eff_align == "outer":
+        if x < -0.10:
+            eff_align = "left"
+        elif x > 0.10:
+            eff_align = "right"
+        else:
+            eff_align = "center"
 
     if eff_align == "left" and detail_text:
         left_edge = x - max_hw
@@ -1409,28 +1504,202 @@ def wrap_subtitle_balanced(text: str, max_chars: int = 42) -> str:
     return " ".join(words[:best_split]) + "\n" + " ".join(words[best_split:])
 
 
+_AMBIGUOUS_LOWER_PROPER_WORDS = {
+    "will", "may", "march", "bill", "mark", "rose", "grace", "hope", "faith",
+    "joy", "dawn", "eve", "art", "ray", "gene", "dean", "cole", "lane", "ford",
+    "west", "north", "south", "east", "cook", "judge", "major", "general",
+    "young", "long", "short", "white", "black", "brown", "green", "hall", "hill",
+    "wood", "woods", "stone", "fields", "cross", "price", "grant", "ward", "page",
+    "bell", "king", "queen", "prince", "duke", "earl", "lord", "lady", "knight",
+    "mason", "hunter", "fisher", "baker", "miller", "taylor", "smith", "clark",
+    "lewis", "walker", "allen", "wright", "scott", "adams", "nelson", "carter",
+    "mitchell", "perez", "roberts", "turner", "phillips", "campbell", "parker",
+    "evans", "edwards", "collins", "stewart", "sanchez", "morris", "rogers",
+    "reed", "bailey", "bell", "cooper", "richardson", "cox", "howard", "ward",
+    "torres", "peterson", "gray", "ramirez", "james", "watson", "brooks", "kelly",
+    "sanders", "price", "bennett", "wood", "barnes", "ross", "henderson", "coleman",
+    "jenkins", "perry", "powell", "long", "patterson", "hughes", "flores", "washington",
+    "butler", "simmons", "foster", "gonzales", "bryant", "alexander", "russell",
+    "griffin", "diaz", "hayes", "amber", "ivory", "jade", "ruby", "pearl", "opal",
+    "hazel", "iris", "violet", "lily", "daisy", "ivy", "holly", "autumn", "summer",
+    "winter", "spring", "friday", "saturday", "sunday", "monday", "tuesday",
+    "wednesday", "thursday", "morning", "afternoon", "evening", "night",
+}
+
+
+def _apply_sentence_case_and_tokens(text: str) -> str:
+    """Capitalize sentence starts and standard screenplay title/rule tokens without altering proper nouns."""
+    if not text:
+        return text
+    out = re.sub(r"(^\s*[a-z]|(?<=[.!?]\s)[a-z])", lambda m: m.group(1).upper(), text)
+    out = re.sub(r"\b(mr|mrs|ms|dr)\.\s*([a-z])", lambda m: f"{m.group(1).capitalize()}. {m.group(2).upper()}", out, flags=re.IGNORECASE)
+    out = re.sub(
+        r"\b(row|stall|clause|section|article|lot|ring|gate|barn)\s+(\d+)\b",
+        lambda m: f"{m.group(1).capitalize()} {m.group(2)}",
+        out,
+        flags=re.IGNORECASE,
+    )
+    return out
+
+
+def _normalize_cue_with_screenplay(
+    text: str,
+    cue_start_s: float,
+    cue_end_s: float,
+    sp_ctx: dict[str, Any] | None,
+) -> str:
+    """
+    Ground-truth subtitle normalization against the screenplay (`sf-board.json` / `*KICHBAN*.txt`):
+    1. Aligns ASR words/bigrams against overlapping timeline shot dialogue (`[cue_start_s - 2.5, cue_end_s + 2.5]`)
+       to fix context-dependent ASR mishearings (e.g. 'claws 9' -> 'Clause 9', 'vacate this Jack' -> 'vacate this shack',
+       'life Lord' -> 'lifeguard', 'Coral Reef' -> 'Coral Reach').
+       Strictly preserves any word that already exists in the shot's ground-truth dialogue (`cl in gt_low_set`).
+    2. Applies screenplay canonical multi-word phrases and fuzzy proper-noun correction for character/place names.
+    """
+    if not text or not sp_ctx:
+        return text
+
+    out = text
+    shot_windows: list[tuple[float, float, str]] = sp_ctx.get("shot_windows") or []
+    proper_nouns: dict[str, str] = sp_ctx.get("proper_nouns") or {}
+    valid_lower: set[str] = sp_ctx.get("valid_lower_vocab") or set()
+    canonical_phrases: list[tuple[re.Pattern[str], str]] = sp_ctx.get("canonical_phrases") or []
+
+    # Step 1: Local timeline shot dialogue alignment
+    local_dlg_parts: list[str] = []
+    for sw_lo, sw_hi, sw_txt in shot_windows:
+        if sw_txt and not (sw_hi < cue_start_s - 2.5 or sw_lo > cue_end_s + 2.5):
+            local_dlg_parts.append(sw_txt)
+
+    if local_dlg_parts:
+        local_blob = " ".join(local_dlg_parts)
+        gt_words = re.findall(r"[A-Za-z][A-Za-z']*", local_blob)
+        gt_lows = [w.lower() for w in gt_words]
+        gt_low_set = set(gt_lows)
+
+        # 1a: Check 2-word ASR bigrams that split a single compound screenplay word (e.g. 'life Lord' -> 'lifeguard', 'Mill bank' -> 'Millbank')
+        cue_tokens = list(re.finditer(r"[A-Za-z][A-Za-z']*", out))
+        for i in range(len(cue_tokens) - 1, 0, -1):
+            m1, m2 = cue_tokens[i - 1], cue_tokens[i]
+            if out[m1.end() : m2.start()] != " ":
+                continue
+            w1, w2 = m1.group(0), m2.group(0)
+            if len(w1) < 3 or len(w2) < 3 or "'" in w1 or "'" in w2:
+                continue
+            w1_l, w2_l = w1.lower(), w2.lower()
+            if w1_l in gt_low_set and w2_l in gt_low_set:
+                continue
+            fused_low = w1_l + w2_l
+            for gw, gl in zip(gt_words, gt_lows):
+                if "'" in gl or len(gl) < len(fused_low) - 1 or len(gl) > len(fused_low) + 2:
+                    continue
+                sim = difflib.SequenceMatcher(None, fused_low, gl).ratio()
+                if sim >= 0.78 or (sim >= 0.70 and fused_low[:3] == gl[:3] and fused_low[-2:] == gl[-2:]):
+                    out = out[: m1.start()] + gw + out[m2.end() :]
+                    break
+
+        # 1b: Contextual neighbor alignment (reverse iteration so string offsets never shift)
+        cue_tokens = list(re.finditer(r"[A-Za-z][A-Za-z']*", out))
+        cue_low_set = {m.group(0).lower() for m in cue_tokens}
+        for i in range(len(cue_tokens) - 1, -1, -1):
+            m_tok = cue_tokens[i]
+            cw = m_tok.group(0)
+            cl = cw.lower()
+            if "'" in cl:
+                continue
+            if cl in gt_low_set:
+                if cl in proper_nouns and proper_nouns[cl] != cw and cl not in _AMBIGUOUS_LOWER_PROPER_WORDS:
+                    out = out[: m_tok.start()] + proper_nouns[cl] + out[m_tok.end() :]
+                continue
+            prev_low = cue_tokens[i - 1].group(0).lower() if i > 0 else ""
+            next_low = cue_tokens[i + 1].group(0).lower() if i + 1 < len(cue_tokens) else ""
+            for k, (cand_gt, cand_low) in enumerate(zip(gt_words, gt_lows)):
+                if "'" in cand_low or cand_low == cl or cand_low in cue_low_set or len(cl) < 3 or len(cand_low) < 3:
+                    continue
+                if abs(len(cand_low) - len(cl)) > 2:
+                    continue
+                # Never flip negation prefixes (e.g. illegal <-> legal, unfair <-> fair) or honorifics (Mister <-> Master)
+                if cl in ("illegal", "legal", "unfair", "fair", "mister", "master", "mrs", "miss") or (
+                    cl.endswith(cand_low) or cand_low.endswith(cl)
+                ):
+                    continue
+                prev_match = bool(prev_low and k > 0 and gt_lows[k - 1] == prev_low)
+                next_match = bool(next_low and k + 1 < len(gt_lows) and gt_lows[k + 1] == next_low)
+                if not (prev_match or next_match):
+                    continue
+                sim = difflib.SequenceMatcher(None, cl, cand_low).ratio()
+                rhyme = len(cl) >= 4 and len(cand_low) >= 4 and cl[-3:] == cand_low[-3:]
+                if sim >= 0.72 or (prev_match and next_match and sim >= 0.58) or (prev_match and rhyme and sim >= 0.60):
+                    out = out[: m_tok.start()] + cand_gt + out[m_tok.end() :]
+                    break
+
+    # Step 2: Global screenplay canonical phrases (e.g. 'Clause 9', 'Coral Reach', 'South Door')
+    for pat, repl_phrase in canonical_phrases:
+        out = pat.sub(repl_phrase, out)
+
+    # Step 3: Global screenplay proper-noun restoration & fuzzy typo correction
+    def _fix_word(m: re.Match[str]) -> str:
+        w = m.group(0)
+        base = w
+        suffix = ""
+        if w.lower().endswith("'s") and len(w) > 4:
+            base = w[:-2]
+            suffix = w[-2:]
+        bl = base.lower()
+        if bl in proper_nouns and bl not in _AMBIGUOUS_LOWER_PROPER_WORDS:
+            return proper_nouns[bl] + suffix
+        if len(bl) >= 5 and bl not in valid_lower and bl not in _AMBIGUOUS_LOWER_PROPER_WORDS:
+            best_pn = None
+            best_r = 0.78
+            bl_cons = re.sub(r"[aeiouy]", "", bl)
+            for pnl, pnc in proper_nouns.items():
+                if abs(len(pnl) - len(bl)) <= 2 and (pnl[0] == bl[0] or pnl[-2:] == bl[-2:]):
+                    r = difflib.SequenceMatcher(None, bl, pnl).ratio()
+                    pnl_cons = re.sub(r"[aeiouy]", "", pnl)
+                    if len(bl_cons) >= 3 and bl_cons == pnl_cons and r >= 0.65:
+                        r = max(r, 0.82)
+                    if r > best_r:
+                        best_r = r
+                        best_pn = pnc
+            if best_pn:
+                return best_pn + suffix
+        return w
+
+    out = re.sub(r"\b[A-Za-z][A-Za-z']+\b", _fix_word, out)
+    return out
+
+
 def style_subtitle_track_in_place(
     draft: dict[str, Any],
     sub_spec: dict[str, Any] | None = None,
+    *,
+    screenplay_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Style an existing CapCut subtitle track in-place using the AI-specified font, color,
-    stroke, and shadow settings for this screenplay.
+    Style an existing CapCut subtitle track in-place and normalize subtitle text against the screenplay.
+    - When the user specifies custom subtitle styling in `sub_spec`, honors `sub_spec`.
+    - When not specified by the user, defaults to the classic Warm Cinema Yellow Boxless standard from
+      `Custom Subtitle Styling And Font` (`Seravek-Medium`, size `4.2`, `text_size=30`, `#E5CE6E`, `y=-0.78`,
+      `stroke_color=#0A0C0E`, `stroke_width=0.028`, `shadow_color=#050608`, `shadow_alpha=0.82`,
+      `shadow_smoothing=2.58`, `shadow_distance=1.8`, `check_flag=47`).
     """
     spec = sub_spec or {}
-    font_ps = str(spec.get("font") or "AvenirNext-Medium")
+    font_ps = str(spec.get("font") or "Seravek-Medium")
     font_name = str(spec.get("font_name") or font_ps)
     font_size = float(spec.get("size") or 4.2)
-    color_hex = str(spec.get("color") or "#F5E6A8")
+    color_hex = str(spec.get("color") or "#E5CE6E")
     y_pos = float(spec.get("y") if spec.get("y") is not None else -0.78)
     max_chars = int(spec.get("max_chars_per_line") or 42)
+    sentence_case = bool(spec.get("sentence_case", True))
+    normalize_with_screenplay = bool(spec.get("normalize_with_screenplay", True))
     word_replacements: dict[str, str] = dict(spec.get("word_replacements") or {})
     cue_overrides: dict[str, str] = {
         str(k): str(v) for k, v in (spec.get("cue_overrides") or {}).items()
     }
 
-    stroke_w = float(spec.get("stroke_width") if spec.get("stroke_width") is not None else 0.024)
+    stroke_w = float(spec.get("stroke_width") if spec.get("stroke_width") is not None else 0.028)
     check_flag = int(spec.get("check_flag") or (47 if stroke_w > 0.001 else 39))
+    text_size_int = int(spec.get("text_size") or (30 if abs(font_size - 4.2) < 0.15 else round(font_size * 4)))
 
     sub_style = TextLayerStyle(
         font_name=font_name,
@@ -1439,21 +1708,30 @@ def style_subtitle_track_in_place(
         color_hex=color_hex,
         stroke_color_hex=str(spec.get("stroke_color") or "#0A0C0E"),
         stroke_width=stroke_w,
-        stroke_alpha=float(spec.get("stroke_alpha") or 0.94),
+        stroke_alpha=float(spec.get("stroke_alpha") or 0.95),
         shadow_color_hex=str(spec.get("shadow_color") or "#050608"),
-        shadow_alpha=float(spec.get("shadow_alpha") or 0.90),
-        shadow_smoothing=float(spec.get("shadow_smoothing") or 2.2),
+        shadow_alpha=float(spec.get("shadow_alpha") or 0.82),
+        shadow_smoothing=float(spec.get("shadow_smoothing") or 2.58),
         shadow_distance=float(spec.get("shadow_distance") or 1.8),
         shadow_angle=-45.0,
-        shadow_diffuse=float(spec.get("shadow_diffuse") or 0.14),
+        shadow_diffuse=float(spec.get("shadow_diffuse") or 0.1435),
         check_flag=check_flag,
     )
 
     resolved_font_path = ensure_capcut_font(font_ps)
     mats_by_id = {m["id"]: m for m in draft.get("materials", {}).get("texts", [])}
 
-    styled_count = 0
-    replaced_count = 0
+    compiled_word_repls: list[tuple[re.Pattern[str] | None, str, str]] = []
+    for old_w, new_w in word_replacements.items():
+        if not old_w:
+            continue
+        if re.match(r"^[A-Za-z0-9_'\-\s]+$", old_w):
+            compiled_word_repls.append((re.compile(rf"\b{re.escape(old_w)}\b", re.IGNORECASE), old_w, new_w))
+        else:
+            compiled_word_repls.append((None, old_w, new_w))
+
+    auto_wrap = bool(spec.get("auto_wrap", True))
+    cue_tasks: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
     for tr in draft.get("tracks", []):
         if tr.get("type") != "text":
             continue
@@ -1463,69 +1741,99 @@ def style_subtitle_track_in_place(
         segs = tr.get("segments", [])
         if len(segs) < 10:
             continue
-
         for idx, seg in enumerate(segs):
             mat_id = seg.get("material_id")
             mat = mats_by_id.get(mat_id)
-            if not mat:
-                continue
+            if mat is not None:
+                cue_tasks.append((idx, seg, mat))
 
-            raw_text = mat.get("recognize_text") or ""
-            if not raw_text and isinstance(mat.get("content"), str) and mat["content"].startswith("{"):
-                try:
-                    raw_text = json.loads(mat["content"]).get("text", "")
-                except Exception:
-                    raw_text = ""
+    def _style_one_cue(item: tuple[int, dict[str, Any], dict[str, Any]]) -> tuple[int, int, str | None]:
+        idx, seg, mat = item
+        raw_text = mat.get("recognize_text") or ""
+        if not raw_text and isinstance(mat.get("content"), str) and mat["content"].startswith("{"):
+            try:
+                raw_text = json.loads(mat["content"]).get("text", "")
+            except Exception:
+                raw_text = ""
 
-            new_text = raw_text
-            if str(idx) in cue_overrides:
-                new_text = cue_overrides[str(idx)]
-            elif str(idx + 1) in cue_overrides:
-                new_text = cue_overrides[str(idx + 1)]
-            else:
-                for old_w, new_w in word_replacements.items():
-                    if old_w in new_text:
-                        new_text = new_text.replace(old_w, new_w)
+        tm = seg.get("target_timerange") or {}
+        cue_st = float(tm.get("start", 0)) / 1e6
+        cue_en = cue_st + float(tm.get("duration", 0)) / 1e6
 
-            if spec.get("auto_wrap", True):
-                new_text = wrap_subtitle_balanced(new_text, max_chars=max_chars)
+        new_text = raw_text
+        sample_diff: str | None = None
+        if str(idx) in cue_overrides:
+            new_text = cue_overrides[str(idx)]
+        elif str(idx + 1) in cue_overrides:
+            new_text = cue_overrides[str(idx + 1)]
+        else:
+            before_norm = " ".join(new_text.split())
+            if normalize_with_screenplay and screenplay_context:
+                new_text = _normalize_cue_with_screenplay(new_text, cue_st, cue_en, screenplay_context)
+            for pat, old_w, new_w in compiled_word_repls:
+                if pat is not None:
+                    new_text = pat.sub(new_w, new_text)
+                elif old_w in new_text:
+                    new_text = new_text.replace(old_w, new_w)
+            if sentence_case:
+                new_text = _apply_sentence_case_and_tokens(new_text)
+            after_norm = " ".join(new_text.split())
+            if after_norm != before_norm and after_norm.lower() != before_norm.lower():
+                sample_diff = f"#{idx+1}: {before_norm!r} -> {after_norm!r}"
 
-            if new_text != raw_text:
-                replaced_count += 1
+        if auto_wrap:
+            new_text = wrap_subtitle_balanced(new_text, max_chars=max_chars)
 
-            rich = build_rich_text_content(new_text, sub_style, font_path=resolved_font_path)
-            mat["recognize_text"] = new_text
-            mat["base_content"] = rich
-            mat["content"] = rich
-            mat["font_name"] = sub_style.font_name
-            mat["font_title"] = sub_style.font_name
-            mat["font_path"] = resolved_font_path
-            mat["font_id"] = sub_style.font_postscript
-            mat["font_resource_id"] = sub_style.font_postscript
-            mat["font_size"] = float(sub_style.font_size)
-            mat["text_size"] = int(round(sub_style.font_size * 4))
-            mat["text_color"] = sub_style.color_hex
-            mat["check_flag"] = int(sub_style.check_flag)
-            mat["border_color"] = sub_style.stroke_color_hex
-            mat["border_width"] = float(sub_style.stroke_width)
-            mat["border_alpha"] = float(sub_style.stroke_alpha)
-            mat["has_shadow"] = True
-            mat["shadow_color"] = sub_style.shadow_color_hex
-            mat["shadow_alpha"] = float(sub_style.shadow_alpha)
-            mat["shadow_smoothing"] = float(sub_style.shadow_smoothing)
-            mat["shadow_distance"] = float(sub_style.shadow_distance)
-            mat["shadow_angle"] = float(sub_style.shadow_angle)
+        modified = 1 if new_text != raw_text else 0
+        rich = build_rich_text_content(new_text, sub_style, font_path=resolved_font_path)
+        mat["recognize_text"] = new_text
+        mat["base_content"] = rich
+        mat["content"] = rich
+        mat["font_name"] = sub_style.font_name
+        mat["font_title"] = sub_style.font_name
+        mat["font_path"] = resolved_font_path
+        mat["font_id"] = sub_style.font_postscript
+        mat["font_resource_id"] = sub_style.font_postscript
+        mat["font_size"] = float(sub_style.font_size)
+        mat["text_size"] = text_size_int
+        mat["text_color"] = sub_style.color_hex
+        mat["check_flag"] = int(sub_style.check_flag)
+        mat["border_color"] = sub_style.stroke_color_hex
+        mat["border_width"] = float(sub_style.stroke_width)
+        mat["border_alpha"] = float(sub_style.stroke_alpha)
+        mat["has_shadow"] = True
+        mat["shadow_color"] = sub_style.shadow_color_hex
+        mat["shadow_alpha"] = float(sub_style.shadow_alpha)
+        mat["shadow_smoothing"] = float(sub_style.shadow_smoothing)
+        mat["shadow_distance"] = float(sub_style.shadow_distance)
+        mat["shadow_angle"] = float(sub_style.shadow_angle)
+        mat["background_style"] = 0
+        mat["background_color"] = ""
+        mat["background_alpha"] = 0.0
 
-            clip = seg.setdefault("clip", {})
-            clip.setdefault("scale", {"x": 1.0, "y": 1.0})
-            clip["transform"] = {"x": 0.0, "y": y_pos}
-            styled_count += 1
+        clip = seg.setdefault("clip", {})
+        clip.setdefault("scale", {"x": 1.0, "y": 1.0})
+        clip["transform"] = {"x": 0.0, "y": y_pos}
+        return (1, modified, sample_diff)
+
+    styled_count = 0
+    replaced_count = 0
+    sample_corrections: list[str] = []
+    if cue_tasks:
+        with ThreadPoolExecutor(max_workers=DEFAULT_MAX_WORKERS) as pool:
+            for st_c, mod_c, s_diff in pool.map(_style_one_cue, cue_tasks):
+                styled_count += st_c
+                replaced_count += mod_c
+                if s_diff and len(sample_corrections) < 12:
+                    sample_corrections.append(s_diff)
 
     return {
         "styled_cues": styled_count,
         "modified_text_cues": replaced_count,
+        "sample_screenplay_corrections": sample_corrections,
         "font": font_ps,
         "size": font_size,
+        "color": color_hex,
         "y": y_pos,
         "check_flag": sub_style.check_flag,
     }

@@ -1,36 +1,36 @@
-# CapCut Cinematic Cards & Subtitles (`v0.6.0`)
+# CapCut Cinematic Cards & Subtitles (`v0.7.0`)
 
 Language: **Tiếng Việt** | [English](README.en.md)
 
-Engine thiết kế **thẻ chữ điện ảnh (Location / Time / Character / THE END)** và **phụ đề chuẩn phim (Cinematic Subtitles)** trực tiếp vào bản nháp CapCut macOS (`draft_info.json`) theo triết lý **YAGNI — Zero Canned Presets, AI Visual Art Direction** (`inspect` -> `probe` -> `apply` + `preview_sheet` trong `< 6s`).
+Engine thiết kế **thẻ chữ điện ảnh (Location / Time / Character / THE END)** và **phụ đề chuẩn phim (Cinematic Subtitles)** trực tiếp vào bản nháp CapCut macOS (`draft_info.json`) theo triết lý **YAGNI — Zero Canned Presets, AI Visual Art Direction** (`inspect` -> `probe` -> `apply` + `preview_sheet` đa luồng 16 workers trong `< 6s`).
 
 ---
 
-## Điểm cốt lõi của `v0.6.0`
+## Điểm cốt lõi của `v0.7.0`
 
-1. **Zero Canned Presets & Auto Google Fonts (`1,600+` Fonts)**:
-   - Không bó cứng vào một vài template có sẵn. AI tự chỉ đạo nghệ thuật (cặp font, tỷ lệ, sắc độ, flankers) theo đúng thế giới kịch bản (`inspect` + `sf-board.json`).
-   - Tự động tách font từ `.ttc` của macOS hoặc **tải trực tiếp bất kỳ font nào từ Google Fonts** (`PlayfairDisplay-Bold`, `CormorantGaramond-BoldItalic`, `Cinzel-Bold`, `BodoniModa-Bold`, `DMSerifDisplay-Regular`, `InstrumentSerif-Italic`, `Rye-Regular`, `BebasNeue-Regular`, `JetBrainsMono-SemiBold`...), chuẩn hoá `hhea`/`OS/2` vertical metrics (`1.20 * upm`) và cài thẳng vào CapCut Sandbox Container (`< 0.4s`).
+1. **16-Thread Parallel Pipeline (`< 6s` Cold Cache, `< 1.5s` Warm Cache) & Anti-Clone World Archetypes**:
+   - Toàn bộ `inspect` (`0.4s`), `probe` (`0.4s–5.6s`), `apply + preview_pages` (`1.1s–3.4s`) chạy đa luồng (`ThreadPoolExecutor` 16 workers) kèm cache frame & cache font in-memory, loại bỏ hoàn toàn tình trạng nghẽn hay văng vào background task.
+   - `inspect` tự động phân tích `sf-board.json` để sinh `recommended_style` theo **8 hệ mỹ thuật điện ảnh** (`coastal_lifeguard_rescue`, `rustic_heartland_americana`, `legal_corporate_dynasty`, `military_tactical_thriller`, `high_society_gala_drama`, `equestrian_heritage_estate`, `modern_prestige_drama`...) và tích hợp chốt chặn **Anti-Clone Guard** trong `apply`.
 
-2. **Multi-Span Editorial Rich Text (`styles[]`) & Ornamental Flankers**:
+2. **Chuẩn hoá Phụ đề từ Kịch bản (`normalize_with_screenplay`) & Mặc định Vàng Cổ Điển (`Seravek-Medium` `4.2` `#E5CE6E`)**:
+   - Khi user yêu cầu style phụ đề riêng, áp dụng theo đúng request; khi không yêu cầu, mặc định chuẩn vàng cổ điển (`Seravek-Medium`, `size: 4.2`, `text_size: 30`, `#E5CE6E`, `y: -0.78`, `stroke_width: 0.028`, `shadow_alpha: 0.82`, `shadow_smoothing: 2.58`, `shadow_distance: 1.8`, `check_flag: 47`).
+   - Tự động đối chiếu từng câu sub `[start_s, end_s]` với thoại gốc trong `sf-board.json` / `*KICHBAN*.txt` để sửa từ ghép bị ASR tách đôi (`life Lord` -> `lifeguard`), từ nghe nhầm theo ngữ cảnh (`vacate this Jack` -> `vacate this shack`, `Coral Reef` -> `Coral Reach`), điều khoản (`claws 9` -> `Clause 9`) và tên riêng nhân vật (`lanira` -> `Lenora`, `alford` -> `Alford`).
+
+3. **Multi-Span Editorial Rich Text (`styles[]`) & Ornamental Flankers**:
    - Tự động chia mảng `styles[]` đa sắc độ & đa kích cỡ ngay trong **1 layer text CapCut duy nhất**:
      - **Dòng Title**: Hạ tiền tố danh xưng (`Dr. `, `Lt. `, `Capt. `, `Judge `, `Sheikh `) và hậu tố tuổi (`, 74`) xuống `0.82–0.85x` cỡ chữ với màu `accent_color`, giữ tên chính ở `1.0x` màu `title_color`.
-     - **Dòng Detail / Role / Time**: Highlight vế chức danh chính / danh hiệu (`$5M Champion`, `Stable Hand`, `Head Trainer`, `Morning`, `Six Months Later`) bằng màu `detail_accent_color`, vế tổ chức/bối cảnh bằng màu `char_detail_color`, và đóng khung bằng ký hiệu trang trí điện ảnh (`—`, `« »`, `·`, `[ ]`, `//`) có kiểm tra bảng `cmap` chống lỗi ô vuông `[]`.
+     - **Dòng Detail / Role / Time**: Highlight vế chức danh chính / danh hiệu bằng màu `detail_accent_color`, vế tổ chức/bối cảnh bằng màu `char_detail_color`, và đóng khung bằng ký hiệu trang trí điện ảnh (`~`, `—`, `•`, `|`, `::`, `◇`) có kiểm tra bảng `cmap` chống lỗi ô vuông `[]`.
 
-3. **Cân Trục Tâm Tuyệt Đối (`align: "center"`) & Trim/Cut-Immune Timing**:
-   - Khóa `x_title == x_detail` cùng trục tâm dọc trong khi neo mép ngoài ở `±0.88` (đo bằng độ rộng glyph thực tế `11.2 px/em/size` trên khung `1920x1080`), không bao giờ tràn màn hình hay lệch trục.
-   - Bóc tách đệ quy `Compound Clips` (`materials.drafts`) có xét đúng phần cắt `source_timerange` & `speed`, ánh xạ `shot_breakdown` (`goc`) từ `sf-board.json` sang giây timeline thực tế sau khi cắt (`TL x-ys` vs `TRIMMED_OUT`), và khóa 2 đầu `[start_s, end_s]` vào đúng 1 cú máy `scdet` liên tục.
-
-4. **Native CapCut `Fade In` + `Fade Out` (Staggered Entrance `0.10s`) & WYSIWYG Preview Sheet**:
-   - Gắn sẵn hiệu ứng gốc của CapCut (`Fade In`: `6724916044072227332`, `Fade Out`: `6724919382104871427`, `start = segment_duration_us - fade_out_us`) với độ trễ dòng phụ `stagger_sec = 0.10s`.
-   - Tự động xuất bảng ảnh `preview_<plan>.jpg` vẽ trực tiếp card lên frame video thực tế để Agent kiểm tra thị giác bằng `read_file`.
+4. **Tự động Né Vùng Chói (`score_frame_negative_space`) & Native CapCut `Fade In` + `Fade Out`**:
+   - Tự động chấm điểm độ sáng & vùng chói (biển hiệu trắng, áo trắng, nắng gắt) ở cả 4 góc (`lower-left`, `lower-right`, `upper-left`, `upper-right`) để lật card sang góc tối sạch chữ nhất.
+   - Gắn sẵn hiệu ứng gốc của CapCut (`Fade In`: `6724916044072227332`, `Fade Out`: `6724919382104871427`) với độ trễ dòng phụ `stagger_sec = 0.10s` và xuất `preview_<plan>_p1..pN.jpg`.
 
 ---
 
-## Cài đặt nhanh (`v0.6.0`)
+## Cài đặt nhanh (`v0.7.0`)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.6.0/install.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.7.0/install.py | python3
 ```
 
 ---

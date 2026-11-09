@@ -178,6 +178,38 @@ class CinematicCardsEngineTest(unittest.TestCase):
         self.assertEqual(len(draft["materials"]["texts"]), 2)
         self.assertEqual(len(draft["materials"]["material_animations"]), 2)
 
+    def test_screenplay_grounded_subtitle_normalization_and_default_yellow_style(self):
+        import re
+
+        sp_ctx = {
+            "shot_windows": [
+                (10.0, 18.0, "You are a lifeguard on Coral Reach, Wes."),
+                (20.0, 28.0, "Under Clause 9, you must vacate this shack immediately!"),
+            ],
+            "proper_nouns": {"wes": "Wes", "lenora": "Lenora", "alford": "Alford", "wexler": "Wexler"},
+            "valid_lower_vocab": {"you", "are", "lifeguard", "coral", "reach", "under", "clause", "must", "vacate", "this", "shack"},
+            "canonical_phrases": [
+                (re.compile(r"\b(?:clause|claws|close|clothes|claus)\s+9\b", re.I), "Clause 9"),
+                (re.compile(r"\bCoral\s+Ree[a-z]+\b", re.I), "Coral Reach"),
+            ],
+        }
+        c1 = native_text._normalize_cue_with_screenplay("you are a life Lord on Coral Reef, wes", 11.0, 15.0, sp_ctx)
+        c1 = native_text._apply_sentence_case_and_tokens(c1)
+        self.assertEqual(c1, "You are a lifeguard on Coral Reach, Wes")
+
+        c2 = native_text._normalize_cue_with_screenplay(
+            "under claws 9 you must vacate this Jack with lanira and alford", 21.0, 26.0, sp_ctx
+        )
+        c2 = native_text._apply_sentence_case_and_tokens(c2)
+        self.assertEqual(c2, "Under Clause 9 you must vacate this shack with Lenora and Alford")
+
+        rec = cards.recommend_style_for_screenplay(
+            {"scenes": [{"name": "LIFEGUARD TOWER AT CORAL REACH BEACH", "sfs": [{"label": "WES — SENIOR OCEAN LIFEGUARD"}]}]},
+            "LIFEGUARD-TEST",
+        )
+        self.assertEqual(rec["archetype"], "coastal_lifeguard_rescue")
+        self.assertEqual(rec["align"], "outer")
+
 
 if __name__ == "__main__":
     unittest.main()

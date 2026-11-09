@@ -9,14 +9,17 @@ import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from native_text import (
+    DEFAULT_MAX_WORKERS,
     FilmCardStyle,
     build_card_pair,
     ensure_capcut_font,
+    ensure_capcut_fonts_parallel,
     format_detail_with_flankers,
     list_available_fonts,
     measure_text_half_width_norm,
@@ -63,38 +66,51 @@ def load_draft(project_dir: Path) -> dict[str, Any]:
 
 
 def save_and_sync_draft(project_dir: Path, draft: dict[str, Any]) -> list[str]:
-    """Write draft_info.json, sync to draft_content.json and Timelines/*/draft_info.json, and clear stale patches."""
+    """Write draft_info.json, sync to draft_content.json and Timelines/*/draft_info.json, and clear stale patches in parallel."""
     main_path = project_dir / "draft_info.json"
     tmp_path = project_dir / "draft_info.json.tmp"
     with tmp_path.open("w", encoding="utf-8") as fh:
         json.dump(draft, fh, ensure_ascii=False, separators=(",", ":"))
     os.replace(tmp_path, main_path)
 
-    synced = [str(main_path)]
+    copy_targets: list[str] = []
     dc_path = project_dir / "draft_content.json"
     if dc_path.exists():
-        shutil.copy2(main_path, dc_path)
-        synced.append(str(dc_path))
+        copy_targets.append(str(dc_path))
+    copy_targets.extend(sorted(glob.glob(str(project_dir / "Timelines" / "*" / "draft_info.json"))))
 
-    for tl_di in sorted(glob.glob(str(project_dir / "Timelines" / "*" / "draft_info.json"))):
-        shutil.copy2(main_path, tl_di)
-        synced.append(tl_di)
-
-    for patch_file in sorted(
+    patch_files = sorted(
         glob.glob(str(project_dir / "Timelines" / "*" / "attachment" / "patch" / "patch.json"))
-    ):
+    )
+    mini_files = sorted(
+        glob.glob(str(project_dir / "Timelines" / "*" / "attachment" / "patch" / "mini_draft.json"))
+    )
+
+    def _copy_one(dst_str: str) -> str:
+        shutil.copy2(main_path, dst_str)
+        return dst_str
+
+    def _clear_patch(pf: str) -> None:
         try:
-            with open(patch_file, "w", encoding="utf-8") as pfh:
+            with open(pf, "w", encoding="utf-8") as pfh:
                 pfh.write('{"patch_list":[]}')
         except Exception:
             pass
-    for mini_file in sorted(
-        glob.glob(str(project_dir / "Timelines" / "*" / "attachment" / "patch" / "mini_draft.json"))
-    ):
+
+    def _remove_mini(mf: str) -> None:
         try:
-            os.remove(mini_file)
+            os.remove(mf)
         except Exception:
             pass
+
+    synced = [str(main_path)]
+    with ThreadPoolExecutor(max_workers=DEFAULT_MAX_WORKERS) as pool:
+        if copy_targets:
+            synced.extend(pool.map(_copy_one, copy_targets))
+        if patch_files:
+            list(pool.map(_clear_patch, patch_files))
+        if mini_files:
+            list(pool.map(_remove_mini, mini_files))
     return synced
 
 
@@ -134,6 +150,15 @@ def load_video_timeline(draft: dict[str, Any]) -> list[VideoSegment]:
             largest_count = cnt
             largest_sub = sub
 
+    def _find_subdraft(seg: dict[str, Any]) -> dict[str, Any] | None:
+        mid = seg.get("material_id")
+        if mid in draft_mats:
+            return draft_mats[mid]
+        for ref_id in seg.get("extra_material_refs") or []:
+            if ref_id in draft_mats:
+                return draft_mats[ref_id]
+        return None
+
     def _unwrap_sub(
         sub: dict[str, Any],
         tl_offset_s: float = 0.0,
@@ -153,7 +178,10 @@ def load_video_timeline(draft: dict[str, Any]) -> list[VideoSegment]:
         for tr in sub.get("tracks", []):
             if tr.get("type") != "video":
                 continue
-            segs = [s for s in tr.get("segments", []) if s.get("material_id") in sv]
+            segs = [
+                s for s in tr.get("segments", [])
+                if s.get("material_id") in sv or _find_subdraft(s) is not None
+            ]
             if not segs:
                 continue
             for s in segs:
@@ -176,7 +204,13 @@ def load_video_timeline(draft: dict[str, Any]) -> list[VideoSegment]:
                 eff_s_start = sub_s0 + (ov_0 - sub_t0) * sub_spd
                 eff_s_dur = (ov_1 - ov_0) * sub_spd
                 eff_spd = sub_spd * p_spd
-                items.append((eff_t_start, eff_t_dur, eff_s_start, eff_s_dur, eff_spd, sv[s["material_id"]]))
+                mid = s.get("material_id")
+                if mid in sv:
+                    items.append((eff_t_start, eff_t_dur, eff_s_start, eff_s_dur, eff_spd, sv[mid]))
+                else:
+                    nested_sub = _find_subdraft(s)
+                    if nested_sub is not None:
+                        items.extend(_unwrap_sub(nested_sub, eff_t_start, eff_s_start, eff_s_dur, eff_spd))
             break
         return items
 
@@ -196,10 +230,11 @@ def load_video_timeline(draft: dict[str, Any]) -> list[VideoSegment]:
             s_start = float(s_r.get("start", 0)) / 1e6
             s_dur = float(s_r.get("duration", t_dur * 1e6)) / 1e6
             spd = float(s.get("speed") or (s_dur / t_dur if t_dur > 0 else 1.0))
+            matched_sub = _find_subdraft(s)
             if mid in top_videos:
                 raw_items.append((t_start, t_dur, s_start, s_dur, spd, top_videos[mid]))
-            elif mid in draft_mats:
-                raw_items.extend(_unwrap_sub(draft_mats[mid], t_start, s_start, s_dur, spd))
+            elif matched_sub is not None:
+                raw_items.extend(_unwrap_sub(matched_sub, t_start, s_start, s_dur, spd))
             elif len(t_segs) <= 2 and largest_sub is not None:
                 raw_items.extend(_unwrap_sub(largest_sub, t_start, s_start, s_dur, spd))
         if raw_items:
@@ -344,9 +379,9 @@ def detect_window_cuts(
     win_end: float,
     scdet_threshold: float = 10.0,
 ) -> dict[str, list[float]]:
-    """Return both edit-segment boundaries and internal ffmpeg scdet camera cuts inside [win_start, win_end]."""
+    """Return both edit-segment boundaries and internal ffmpeg scdet camera cuts inside [win_start, win_end] in parallel."""
     seg_cuts: list[float] = []
-    scdet_cuts: list[float] = []
+    scdet_tasks: list[tuple[VideoSegment, float, float]] = []
 
     for seg in segments:
         if seg.timeline_end_s <= win_start or seg.timeline_start_s >= win_end:
@@ -363,7 +398,10 @@ def detect_window_cuts(
         ov_dur = ov_end - ov_start
         if ov_dur <= 0.3:
             continue
+        scdet_tasks.append((seg, ov_start, ov_dur))
 
+    def _run_scdet(item: tuple[VideoSegment, float, float]) -> list[float]:
+        seg, ov_start, ov_dur = item
         src_offset = seg.source_start_s + (ov_start - seg.timeline_start_s) * seg.speed
         src_dur = ov_dur * seg.speed
         cmd = [
@@ -383,10 +421,20 @@ def detect_window_cuts(
             "-",
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
+        found: list[float] = []
         for m in re.findall(r"lavfi\.scd\.time=([0-9.]+)", res.stderr):
             tl_cut = round(ov_start + float(m) / max(seg.speed, 1e-6), 2)
             if win_start + 0.15 < tl_cut < win_end - 0.15:
-                scdet_cuts.append(tl_cut)
+                found.append(tl_cut)
+        return found
+
+    scdet_cuts: list[float] = []
+    if len(scdet_tasks) == 1:
+        scdet_cuts.extend(_run_scdet(scdet_tasks[0]))
+    elif len(scdet_tasks) > 1:
+        with ThreadPoolExecutor(max_workers=min(DEFAULT_MAX_WORKERS, len(scdet_tasks))) as pool:
+            for sub_cuts in pool.map(_run_scdet, scdet_tasks):
+                scdet_cuts.extend(sub_cuts)
 
     all_cuts = sorted(set(seg_cuts + scdet_cuts))
     return {
@@ -404,7 +452,7 @@ def extract_frame_at_timeline_sec(
     height: int = 360,
     include_guides: bool = True,
 ) -> tuple[bool, str]:
-    """Extract a single frame at timeline second `t_sec`, optionally annotated with composition zones."""
+    """Extract a single frame at timeline second `t_sec`, with disk caching by source clip & timestamp."""
     target_seg: VideoSegment | None = None
     for seg in segments:
         if seg.timeline_start_s <= t_sec <= seg.timeline_end_s:
@@ -419,6 +467,16 @@ def extract_frame_at_timeline_sec(
         target_seg.source_start_s
         + max(0.0, t_sec - target_seg.timeline_start_s) * target_seg.speed
     )
+    cache_dir = Path("/tmp/_capcut_frame_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_key = f"{target_seg.clip_name}_{int(round(src_sec * 20)):05d}_{width}x{height}_g{int(include_guides)}.jpg"
+    cache_path = cache_dir / cache_key
+    if cache_path.exists() and cache_path.stat().st_size > 500:
+        out_jpg.parent.mkdir(parents=True, exist_ok=True)
+        if cache_path.resolve() != out_jpg.resolve():
+            shutil.copyfile(str(cache_path), str(out_jpg))
+        return True, target_seg.clip_name
+
     if include_guides:
         vf = (
             f"scale={width}:{height},"
@@ -430,6 +488,7 @@ def extract_frame_at_timeline_sec(
         )
     else:
         vf = f"scale={width}:{height}"
+    out_jpg.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -449,26 +508,118 @@ def extract_frame_at_timeline_sec(
         str(out_jpg),
     ]
     subprocess.run(cmd, check=False)
+    if out_jpg.exists() and out_jpg.stat().st_size > 500:
+        try:
+            shutil.copyfile(str(out_jpg), str(cache_path))
+        except Exception:
+            pass
     return out_jpg.exists(), target_seg.clip_name
+
+
+def score_frame_negative_space(frame_path: Path) -> dict[str, Any]:
+    """
+    Evaluate luminance, 90th-percentile brightness (glare/white signage), and bright-pixel ratio
+    across the 4 corner zones ('lower-left', 'lower-right', 'upper-left', 'upper-right') on `frame_path`.
+    Returns zone stats and `best_anchor` (lowest cost = darkest, least glared negative space).
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(frame_path) as im:
+            gray = im.convert("L").resize((160, 90))
+        boxes = {
+            "lower-left": (10, 52, 74, 72),
+            "lower-right": (86, 52, 150, 72),
+            "upper-left": (10, 6, 74, 26),
+            "upper-right": (86, 6, 150, 26),
+        }
+        zones: dict[str, dict[str, float]] = {}
+        for zname, box in boxes.items():
+            cropped = gray.crop(box)
+            px = sorted(getattr(cropped, "get_flattened_data", cropped.getdata)())
+            n = max(1, len(px))
+            mean_l = sum(px) / n
+            p90_l = float(px[min(n - 1, int(n * 0.90))])
+            bright_r = sum(1 for v in px if v >= 185) / n
+            upper_pen = 18.0 if zname.startswith("upper") else 0.0
+            cost = round(mean_l + 0.85 * p90_l + 240.0 * bright_r + upper_pen, 2)
+            zones[zname] = {
+                "mean_luma": round(mean_l, 1),
+                "p90_luma": round(p90_l, 1),
+                "bright_ratio": round(bright_r, 3),
+                "cost": cost,
+            }
+        best_anchor = min(zones.keys(), key=lambda k: zones[k]["cost"])
+        return {"best_anchor": best_anchor, "zones": zones}
+    except Exception:
+        return {"best_anchor": "lower-left", "zones": {}}
+
+
+def extract_fast_timeline_cuts(video_segs: list[VideoSegment]) -> list[float]:
+    """
+    Extract all timeline edit-segment boundaries PLUS any internal camera shot cuts defined
+    in `sf-board.json` (`goc` intervals like `(0-5s)`, `(5-10s)`) in < 0.002s without spawning ffmpeg.
+    """
+    cuts: set[float] = set()
+    for seg in video_segs:
+        cuts.add(round(seg.timeline_start_s, 2))
+        cuts.add(round(seg.timeline_end_s, 2))
+
+    sf_board_path: Path | None = None
+    for seg in video_segs:
+        if not seg.path:
+            continue
+        p = Path(seg.path)
+        for parent in (p.parent, p.parent.parent):
+            cand = parent / "sf-board.json"
+            if cand.exists():
+                sf_board_path = cand
+                break
+        if sf_board_path:
+            break
+
+    if sf_board_path:
+        try:
+            sb = json.loads(sf_board_path.read_text(encoding="utf-8"))
+            segs_by_clip: dict[str, list[VideoSegment]] = {}
+            for seg in video_segs:
+                segs_by_clip.setdefault(Path(seg.clip_name).stem, []).append(seg)
+            for sc in sb.get("scenes", [])[1:]:
+                for sh in (sc.get("shots") or sc.get("sfs") or []):
+                    cid = sh.get("id")
+                    goc = sh.get("goc", "")
+                    if not cid or not goc or cid not in segs_by_clip:
+                        continue
+                    for m in re.finditer(r"\(?(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*s\)?", goc):
+                        for src_t in (float(m.group(1)), float(m.group(2))):
+                            for seg in segs_by_clip[cid]:
+                                s0 = seg.source_start_s
+                                s1 = s0 + seg.source_dur_s
+                                if s0 + 0.05 < src_t < s1 - 0.05:
+                                    tl_t = round(seg.timeline_start_s + (src_t - s0) / max(seg.speed, 1e-6), 2)
+                                    cuts.add(tl_t)
+        except Exception:
+            pass
+    return sorted(cuts)
 
 
 def build_contact_sheet(
     frame_items: list[tuple[float, str, Path]],
     out_sheet: Path,
-    cols: int = 3,
+    cols: int = 4,
 ) -> bool:
-    """Assemble extracted frame JPEGs into a labeled contact sheet using PIL."""
+    """Assemble extracted frame JPEGs into a compact labeled contact sheet using PIL."""
     if not frame_items:
         return False
     try:
         from PIL import Image, ImageDraw, ImageFont
 
-        cell_w, cell_h = 640, 360
+        cell_w, cell_h = 480, 270
         rows = (len(frame_items) + cols - 1) // cols
         sheet = Image.new("RGB", (cols * cell_w, rows * cell_h), (12, 14, 18))
         draw = ImageDraw.Draw(sheet)
         try:
-            font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 18)
+            font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 14)
         except Exception:
             font = ImageFont.load_default()
 
@@ -480,11 +631,11 @@ def build_contact_sheet(
             with Image.open(fpath) as im:
                 sheet.paste(im.resize((cell_w, cell_h)), (x0, y0))
             label = f" t={t_sec:6.2f}s | {clip_name} "
-            draw.rectangle([x0 + 6, y0 + 6, x0 + 6 + len(label) * 11, y0 + 32], fill=(0, 0, 0))
-            draw.text((x0 + 8, y0 + 9), label, fill=(255, 230, 110), font=font)
+            draw.rectangle([x0 + 5, y0 + 5, min(x0 + cell_w - 5, x0 + 5 + len(label) * 9), y0 + 26], fill=(0, 0, 0))
+            draw.text((x0 + 7, y0 + 7), label, fill=(255, 230, 110), font=font)
 
         out_sheet.parent.mkdir(parents=True, exist_ok=True)
-        sheet.save(out_sheet, quality=88)
+        sheet.save(out_sheet, quality=80)
         return True
     except Exception:
         return False
@@ -532,61 +683,68 @@ def apply_plan_to_draft(
     - Outer-edge alignment using true fontTools glyph width
     - Simultaneous overlapping cards (multi-track allocation: Track Pair 1, Track Pair 2, ...)
     - Camera-cut end snapping so cards don't bleed 0.3-1.0s into the next shot
-    - Optional in-place subtitle styling with check_flag=47 drop shadow
+    - Optional in-place subtitle styling with check_flag=47 drop shadow and screenplay-grounded normalization
     """
-    preset: StylePreset = resolve_style(plan.get("style"))
-    ensure_capcut_font(preset.character_title.font_postscript)
-    ensure_capcut_font(preset.character_detail.font_postscript)
-    ensure_capcut_font(preset.time_title.font_postscript)
-    ensure_capcut_font(preset.time_detail.font_postscript)
-
     video_segs = load_video_timeline(draft)
-    cut_times = sorted(
-        {seg.timeline_start_s for seg in video_segs} | {seg.timeline_end_s for seg in video_segs}
-    )
+    cut_times = extract_fast_timeline_cuts(video_segs)
     film_duration_s = (
         video_segs[-1].timeline_end_s
         if video_segs
         else round(float(draft.get("duration", 0)) / 1e6, 3)
     )
-
     sub_cues = extract_subtitles(draft)
+    sp_ctx = build_screenplay_subtitle_context(video_segs, sub_cues)
+
+    raw_style = dict(plan.get("style") or {})
+    rec_style = sp_ctx.get("recommended_style") or {}
+    # Anti-clone guard: if style is empty OR clones the Horse test template on a non-equestrian project,
+    # automatically apply the screenplay's recommended_style.
+    is_horse_clone = (
+        raw_style.get("title_font") == "PlayfairDisplay-Bold"
+        and "CormorantGaramond" in str(raw_style.get("detail_font") or "")
+        and str(raw_style.get("title_color") or "").upper() == "#F3CA6E"
+        and rec_style.get("archetype") not in ("", "equestrian_heritage_estate")
+    )
+    if (not raw_style or is_horse_clone) and rec_style:
+        merged_style = dict(rec_style)
+        if not is_horse_clone:
+            merged_style.update(raw_style)
+        raw_style = merged_style
+
+    preset: FilmCardStyle = resolve_style(raw_style)
+    raw_cards: list[dict[str, Any]] = list(plan.get("cards") or [])
+    raw_cards.sort(key=lambda c: (float(c.get("start", 0.0)), str(c.get("kind", ""))))
+
+    # Warm up all unique fonts across preset, cards, and subtitles in parallel
+    all_font_specs: list[str] = [
+        preset.character_title.font_postscript,
+        preset.character_detail.font_postscript,
+        preset.time_title.font_postscript,
+        preset.time_detail.font_postscript,
+        preset.ending_title.font_postscript,
+        preset.ending_detail.font_postscript,
+    ]
+    for c in raw_cards:
+        if c.get("title_font"):
+            all_font_specs.append(str(c["title_font"]))
+        if c.get("detail_font"):
+            all_font_specs.append(str(c["detail_font"]))
+    if isinstance(plan.get("subtitles"), dict) and plan["subtitles"].get("font"):
+        all_font_specs.append(str(plan["subtitles"]["font"]))
+    ensure_capcut_fonts_parallel(all_font_specs)
 
     # Strip old card tracks first
     strip_card_tracks(draft)
 
-    raw_cards: list[dict[str, Any]] = list(plan.get("cards") or [])
-    raw_cards.sort(key=lambda c: (float(c.get("start", 0.0)), str(c.get("kind", ""))))
-
-    # Track pairs: each pair holds [title_segments, detail_segments, last_end_us]
-    track_pairs: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
-    pair_end_us: list[int] = []
-
-    mats = draft.setdefault("materials", {})
-    texts_list = mats.setdefault("texts", [])
-    anims_list = mats.setdefault("material_animations", [])
-
-    applied_cards: list[dict[str, Any]] = []
-
-    for idx, card in enumerate(raw_cards, start=1):
+    # Pre-adjust sub-shot boundaries using fast cut_times (< 0.002s)
+    resolved_times: list[tuple[float, float]] = []
+    for card in raw_cards:
         kind = str(card.get("kind") or card.get("type") or "char").lower()
-        if kind in ("character", "char"):
-            kind_norm = "char"
-        elif kind in ("end", "ending"):
-            kind_norm = "end"
-        else:
-            kind_norm = "time"
-
-        t_style, d_style, card_align, card_order = resolve_card_styles(card, preset)
-
+        kind_norm = "char" if kind in ("character", "char") else ("end" if kind in ("end", "ending") else "time")
         start_s = float(card.get("start", card.get("start_s", 0.0)))
         end_s = float(card.get("end", card.get("end_s", start_s + 4.0)))
         if kind_norm == "end" and card.get("hold_to_end", False) and film_duration_s > start_s:
             end_s = film_duration_s
-
-        # Full Sub-Shot Boundary Locking:
-        # Detect all camera cuts (segment boundaries + internal scdet cuts) around [start_s - 0.6s, end_s + 0.6s]
-        # and lock both start_s (>= shot_lo + 0.15s) and end_s (<= shot_hi - 0.08s) inside the dominant continuous shot.
         if (
             snap_to_cuts
             and kind_norm != "end"
@@ -596,8 +754,7 @@ def apply_plan_to_draft(
             probe_lo = max(0.0, round(start_s - 0.6, 2))
             probe_hi = min(film_duration_s, round(end_s + 0.6, 2))
             if probe_hi > probe_lo:
-                cuts = detect_window_cuts(video_segs, probe_lo, probe_hi)["all_cuts"]
-                bounds = [probe_lo] + [c for c in cuts if probe_lo + 0.05 < c < probe_hi - 0.05] + [probe_hi]
+                bounds = [probe_lo] + [c for c in cut_times if probe_lo + 0.05 < c < probe_hi - 0.05] + [probe_hi]
                 best_sub = (probe_lo, probe_hi)
                 best_ov = -1.0
                 for bi in range(len(bounds) - 1):
@@ -612,7 +769,29 @@ def apply_plan_to_draft(
                         start_s = round(slo + 0.15, 2)
                     if shi < probe_hi - 0.02 and end_s > shi - 0.06:
                         end_s = round(shi - 0.08, 2)
+        resolved_times.append((start_s, end_s))
 
+    # Parallel frame extraction + negative-space scoring + card pair construction across all worker threads
+    need_mid_frames = bool(video_segs) and any(
+        str(c.get("anchor") or "").strip().lower() in ("", "auto") or c.get("auto_avoid_glare", True)
+        for c in raw_cards
+    )
+    tmp_fdir = Path("/tmp/_capcut_frame_cache/midpoints")
+    if need_mid_frames:
+        tmp_fdir.mkdir(parents=True, exist_ok=True)
+
+    def _build_one_card(idx_and_card: tuple[int, dict[str, Any]]) -> dict[str, Any]:
+        idx, card = idx_and_card
+        kind = str(card.get("kind") or card.get("type") or "char").lower()
+        if kind in ("character", "char"):
+            kind_norm = "char"
+        elif kind in ("end", "ending"):
+            kind_norm = "end"
+        else:
+            kind_norm = "time"
+
+        t_style, d_style, card_align, card_order = resolve_card_styles(card, preset)
+        start_s, end_s = resolved_times[idx - 1]
         dur_s = max(0.5, round(end_s - start_s, 3))
         start_us = int(round(start_s * 1_000_000))
         dur_us = int(round(dur_s * 1_000_000))
@@ -625,6 +804,11 @@ def apply_plan_to_draft(
 
         title_text = str(card.get("title") or card.get("name") or card.get("main") or "").strip()
         raw_detail_text = str(card.get("detail") or card.get("role") or card.get("sub") or "").strip()
+        if card.get("title_uppercase", preset.title_uppercase):
+            title_text = title_text.upper()
+        if card.get("detail_uppercase", preset.detail_uppercase):
+            raw_detail_text = raw_detail_text.upper()
+
         card_flankers = str(
             card.get("flankers")
             if card.get("flankers") is not None
@@ -634,6 +818,40 @@ def apply_plan_to_draft(
             raw_detail_text, card_flankers, font_postscript=d_style.font_postscript
         )
         card_for_pos = dict(card, title=title_text, detail=detail_text)
+
+        flip_note: str | None = None
+        req_anchor = str(card_for_pos.get("anchor") or "").strip().lower()
+        if need_mid_frames and (req_anchor in ("", "auto") or card_for_pos.get("auto_avoid_glare", True)):
+            mid_t = round((start_s + end_s) * 0.5, 2)
+            f_p = tmp_fdir / f"mid_{idx:03d}_{int(round(mid_t*10)):06d}.jpg"
+            ok, _ = extract_frame_at_timeline_sec(
+                video_segs, mid_t, f_p, width=960, height=540, include_guides=False
+            )
+            if ok and f_p.exists():
+                ns = score_frame_negative_space(f_p)
+                zones = ns.get("zones", {})
+                if req_anchor in ("", "auto"):
+                    card_for_pos["anchor"] = ns["best_anchor"]
+                elif card_for_pos.get("auto_avoid_glare", True) and req_anchor in ("lower-left", "lower-right") and zones:
+                    opp = "lower-right" if req_anchor == "lower-left" else "lower-left"
+                    z_cur = zones.get(req_anchor, {})
+                    z_opp = zones.get(opp, {})
+                    if z_cur.get("bright_ratio", 0.0) >= 0.22 or z_cur.get("p90_luma", 0.0) >= 195.0:
+                        if (
+                            z_opp.get("cost", 999.0) < z_cur.get("cost", 0.0) - 35.0
+                            and z_opp.get("p90_luma", 255.0) < 195.0
+                        ):
+                            card_for_pos["anchor"] = opp
+                            flip_note = f"#{idx:02d} {title_text}: {req_anchor}->{opp}"
+                        else:
+                            best_up = min(
+                                ("upper-left", "upper-right"),
+                                key=lambda k: zones.get(k, {}).get("cost", 999.0),
+                            )
+                            z_up = zones.get(best_up, {})
+                            if z_up.get("cost", 999.0) < z_cur.get("cost", 0.0) - 40.0:
+                                card_for_pos["anchor"] = best_up
+                                flip_note = f"#{idx:02d} {title_text}: {req_anchor}->{best_up}"
 
         x_title, x_detail, y_main, y_detail, scale = resolve_card_position(
             card_for_pos,
@@ -667,6 +885,50 @@ def apply_plan_to_draft(
             scale=scale,
             include_fade_out=include_fade_out,
         )
+        return {
+            "idx": idx,
+            "kind_norm": kind_norm,
+            "start_s": start_s,
+            "dur_s": dur_s,
+            "start_us": start_us,
+            "end_us": end_us,
+            "x_title": x_title,
+            "x_detail": x_detail,
+            "y_main": y_main,
+            "y_detail": y_detail,
+            "scale": scale,
+            "card_align": card_align,
+            "card_order": card_order,
+            "title_text": title_text,
+            "detail_text": detail_text,
+            "pair_res": pair_res,
+            "flip_note": flip_note,
+            "raw_card": card,
+        }
+
+    built_cards: list[dict[str, Any]] = []
+    if raw_cards:
+        with ThreadPoolExecutor(max_workers=DEFAULT_MAX_WORKERS) as pool:
+            built_cards = list(pool.map(_build_one_card, enumerate(raw_cards, start=1)))
+
+    # Track pairs: each pair holds [title_segments, detail_segments, last_end_us]
+    track_pairs: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
+    pair_end_us: list[int] = []
+
+    mats = draft.setdefault("materials", {})
+    texts_list = mats.setdefault("texts", [])
+    anims_list = mats.setdefault("material_animations", [])
+
+    applied_cards: list[dict[str, Any]] = []
+    glare_flips: list[str] = []
+
+    for bc in built_cards:
+        pair_res = bc["pair_res"]
+        detail_text = bc["detail_text"]
+        start_us = bc["start_us"]
+        end_us = bc["end_us"]
+        if bc["flip_note"]:
+            glare_flips.append(bc["flip_note"])
 
         texts_list.append(pair_res.title_material)
         anims_list.append(pair_res.title_animation)
@@ -674,7 +936,6 @@ def apply_plan_to_draft(
             texts_list.append(pair_res.detail_material)
             anims_list.append(pair_res.detail_animation)
 
-        # Allocate to the first non-overlapping track pair, or create a new track pair for simultaneous cards
         allocated_pair_idx: int | None = None
         for p_idx, last_end in enumerate(pair_end_us):
             if start_us >= last_end - 20_000:
@@ -693,21 +954,21 @@ def apply_plan_to_draft(
 
         applied_cards.append(
             {
-                "index": idx,
-                "kind": kind_norm,
+                "index": bc["idx"],
+                "kind": bc["kind_norm"],
                 "track_pair": allocated_pair_idx + 1,
-                "start_s": round(start_s, 2),
-                "end_s": round(start_s + dur_s, 2),
-                "x": x_title,
-                "x_detail": x_detail,
-                "y_main": y_main,
-                "y_detail": y_detail,
-                "scale": scale,
-                "align": card_align,
-                "order": card_order,
-                "title": title_text,
+                "start_s": round(bc["start_s"], 2),
+                "end_s": round(bc["start_s"] + bc["dur_s"], 2),
+                "x": bc["x_title"],
+                "x_detail": bc["x_detail"],
+                "y_main": bc["y_main"],
+                "y_detail": bc["y_detail"],
+                "scale": bc["scale"],
+                "align": bc["card_align"],
+                "order": bc["card_order"],
+                "title": bc["title_text"],
                 "detail": detail_text,
-                "_raw_card": card,
+                "_raw_card": bc["raw_card"],
             }
         )
 
@@ -740,15 +1001,17 @@ def apply_plan_to_draft(
     if plan.get("subtitles") is not None:
         sub_spec = plan["subtitles"]
         if isinstance(sub_spec, dict) and sub_spec.get("style_in_place", True):
-            sub_report = style_subtitle_track_in_place(draft, sub_spec)
+            sub_report = style_subtitle_track_in_place(draft, sub_spec, screenplay_context=sp_ctx)
 
     return {
+        "style_archetype": rec_style.get("archetype", "custom"),
         "title_font": preset.character_title.font_postscript,
         "detail_font": preset.character_detail.font_postscript,
         "title_size": preset.character_title.font_size,
         "detail_size": preset.character_detail.font_size,
         "cards_applied": len(applied_cards),
         "track_pairs_created": len(track_pairs),
+        "glare_flips": glare_flips,
         "cards": applied_cards,
         "subtitles": sub_report,
         "_preset": preset,
@@ -812,22 +1075,28 @@ def extract_screenplay_ground_truth(
         if sf_board_path:
             break
 
-    # Fallback when video is a flat exported MP4 without V-NNN filenames: match subtitle lines against workspace sf-board.json
+    # Fallback when video is a flat exported MP4 without V-NNN filenames: match subtitle lines against workspace sf-board.json in parallel
     if not sf_board_path and subs:
         sub_blob = " ".join(c.get("text", "") for c in subs[:40]).lower()
         sub_words = _norm_words(sub_blob)
-        best_score = 0
         ws_root = Path("/Users/daho100/Documents/SF Board")
         if ws_root.exists() and sub_words:
-            for cand in ws_root.glob("*.project/sf-board.json"):
+            cands = list(ws_root.glob("*.project/sf-board.json"))
+            min_hits = max(6, int(len(sub_words) * 0.35))
+
+            def _score_cand(cand: Path) -> tuple[int, Path]:
                 try:
                     raw = cand.read_text(encoding="utf-8")[:60000].lower()
-                    score = sum(1 for w in sub_words if w in raw)
-                    if score > best_score and score >= max(6, int(len(sub_words) * 0.35)):
-                        best_score = score
-                        sf_board_path = cand
+                    return sum(1 for w in sub_words if w in raw), cand
                 except Exception:
-                    continue
+                    return 0, cand
+
+            if cands:
+                with ThreadPoolExecutor(max_workers=min(DEFAULT_MAX_WORKERS, len(cands))) as pool:
+                    scored = list(pool.map(_score_cand, cands))
+                best_score, best_cand = max(scored, key=lambda x: x[0])
+                if best_score >= min_hits:
+                    sf_board_path = best_cand
 
     if not sf_board_path:
         return {}
@@ -838,9 +1107,23 @@ def extract_screenplay_ground_truth(
     except Exception:
         return {}
 
+    # Detect cold-open hook at the beginning of the timeline (e.g. S7 clips placed before S1/S2)
+    hook_end_s = 0.0
+    if video_segs:
+        first_chron_idx = None
+        for idx_s, seg in enumerate(video_segs[:25]):
+            m_sc = re.match(r"^V-S(\d+)", seg.clip_name, re.I)
+            if m_sc and int(m_sc.group(1)) <= 2:
+                first_chron_idx = idx_s
+                break
+        if first_chron_idx and first_chron_idx > 0:
+            hook_end_s = video_segs[first_chron_idx].timeline_start_s
+
     clip_segs: dict[str, list[VideoSegment]] = {}
     clip_ranges: dict[str, tuple[float, float]] = {}
     for seg in video_segs:
+        if hook_end_s > 0.0 and seg.timeline_end_s <= hook_end_s + 0.05:
+            continue
         cid = Path(seg.clip_name).stem
         clip_segs.setdefault(cid, []).append(seg)
         if cid not in clip_ranges:
@@ -868,12 +1151,18 @@ def extract_screenplay_ground_truth(
                     clip_ranges[cid] = (matched_cues[0]["start_s"], matched_cues[-1]["end_s"])
 
     clip_info: dict[str, dict[str, Any]] = {}
+    sf_char_refs: dict[str, list[str]] = {}
     story_scenes: list[dict[str, Any]] = []
     probe_windows: list[str] = []
 
     for sc in sb.get("scenes", [])[1:]:
         sid = sc.get("id", "")
         sname = sc.get("name", sid)
+        for sf_item in sc.get("sfs") or []:
+            sf_id = sf_item.get("id")
+            c_refs = (sf_item.get("refs") or {}).get("chars") or []
+            if sf_id and c_refs:
+                sf_char_refs[sf_id] = list(c_refs)
         shots = sc.get("shots") or sc.get("sfs") or []
         sc_clips = [sh.get("id") for sh in shots if sh.get("id") in clip_ranges]
         for sh in shots:
@@ -892,6 +1181,9 @@ def extract_screenplay_ground_truth(
                 clip_info[cid] = {
                     "scene_id": sid,
                     "scene_name": sname,
+                    "sf": sh.get("sf", ""),
+                    "prompt": sh.get("prompt", ""),
+                    "raw_goc": raw_goc,
                     "notes": sh.get("notes", ""),
                     "dialogue": sh.get("text", ""),
                     "shot_breakdown": mapped_goc,
@@ -922,20 +1214,37 @@ def extract_screenplay_ground_truth(
     ref_sfs = (sb.get("scenes") or [{}])[0].get("sfs", [])
     for ref in ref_sfs:
         rid = str(ref.get("id") or "")
-        m = re.match(r"^((?:CHAR|AL)\d+)", rid)
-        if not m:
+        m_char = re.match(r"^((?:CHAR|AL)\d+)", rid)
+        m_named = re.match(r"^REF_([A-Z0-9]+)_", rid)
+        if m_char:
+            base_id = m_char.group(1)
+        elif m_named and m_named.group(1) not in {"BG", "PROP", "PROPS", "LOC", "SCENE"}:
+            base_id = m_named.group(1)
+        else:
             continue
-        base_id = m.group(1)
         # Only include clips that survive on the timeline with >= 1.2s duration
         used = [
             c for c in (ref.get("usedBy") or [])
             if c in clip_ranges and (clip_ranges[c][1] - clip_ranges[c][0]) >= 1.2
         ]
+        if not used and m_named:
+            char_token = m_named.group(1)
+            for cid, ci in clip_info.items():
+                if cid not in clip_ranges or (clip_ranges[cid][1] - clip_ranges[cid][0]) < 1.2:
+                    continue
+                sf_refs = sf_char_refs.get(ci.get("sf", ""), [])
+                if rid in sf_refs or any(r.startswith(f"REF_{char_token}_") for r in sf_refs):
+                    used.append(cid)
+                elif re.search(rf"\b{re.escape(char_token)}\b", ci.get("raw_goc", "") + "\n" + ci.get("prompt", "")):
+                    used.append(cid)
+        lbl_str = ref.get("label") or ""
+        desc_str = (ref.get("desc") or "").splitlines()[0]
+        full_label = f"{lbl_str} — {desc_str}".strip(" —") if (lbl_str or desc_str) else rid
         entry = char_groups.setdefault(
             base_id,
             {
                 "id": base_id,
-                "label": ref.get("label") or ref.get("desc") or rid,
+                "label": full_label,
                 "clips": [],
             },
         )
@@ -949,7 +1258,7 @@ def extract_screenplay_ground_truth(
         if not clips_sorted:
             continue
         first_clips = []
-        for c in clips_sorted[:3]:
+        for idx_c_clip, c in enumerate(clips_sorted[:2]):
             c_lo, c_hi = clip_ranges[c]
             ci = clip_info.get(c, {})
             first_clips.append(
@@ -963,7 +1272,8 @@ def extract_screenplay_ground_truth(
                     "shot_breakdown": ci.get("shot_breakdown", ""),
                 }
             )
-            probe_windows.append(f"{int(c_lo)}-{int(c_hi) + 1}")
+            if idx_c_clip == 0:
+                probe_windows.append(f"{int(c_lo)}-{int(min(c_hi, c_lo + 14.0)) + 1}")
         char_appearances.append(
             {
                 "character_id": base_id,
@@ -974,22 +1284,533 @@ def extract_screenplay_ground_truth(
         )
 
     char_appearances.sort(key=lambda x: x["first_appearance_s"])
+    # Merge overlapping probe windows (keeping each merged window <= 24s so dead gaps aren't probed)
+    parsed_wins: list[tuple[int, int]] = []
+    for pw in probe_windows:
+        if "-" in pw:
+            a_str, b_str = pw.split("-", 1)
+            parsed_wins.append((int(a_str), int(b_str)))
+    parsed_wins.sort()
+    merged_wins: list[tuple[int, int]] = []
+    for a_w, b_w in parsed_wins:
+        if (
+            merged_wins
+            and a_w <= merged_wins[-1][1] + 2
+            and max(merged_wins[-1][1], b_w) - merged_wins[-1][0] <= 24
+        ):
+            merged_wins[-1] = (merged_wins[-1][0], max(merged_wins[-1][1], b_w))
+        else:
+            merged_wins.append((a_w, b_w))
+
+    rec_style = recommend_style_for_screenplay(sb, str(sf_board_path.parent.name))
     return {
         "screenplay_source": str(sf_board_path),
+        "recommended_style": rec_style,
         "story_scenes": story_scenes,
         "character_appearances": char_appearances,
-        "recommended_probe_windows": ",".join(dict.fromkeys(probe_windows)),
+        "recommended_probe_windows": ",".join(f"{a}-{b}" for a, b in merged_wins),
+    }
+
+
+_STOP_PROPER_NOUNS: set[str] = {
+    "the", "you", "your", "yours", "what", "why", "when", "where", "who", "whom", "whose", "how",
+    "that", "this", "there", "they", "their", "them", "then", "these", "those", "she", "her", "hers",
+    "his", "him", "he", "and", "but", "for", "nor", "not", "are", "was", "were", "will", "would",
+    "could", "should", "shall", "may", "might", "must", "have", "has", "had", "can", "did", "does",
+    "don't", "didn't", "doesn't", "won't", "can't", "isn't", "aren't", "wasn't", "weren't", "haven't",
+    "hasn't", "hadn't", "wouldn't", "couldn't", "shouldn't", "let", "let's", "look", "listen", "wait",
+    "stop", "get", "got", "come", "came", "take", "took", "give", "gave", "keep", "kept", "make",
+    "made", "tell", "told", "call", "called", "move", "step", "hold", "stay", "leave", "left", "open",
+    "close", "put", "bring", "send", "check", "read", "sign", "walk", "run", "sit", "stand", "turn",
+    "back", "out", "off", "down", "over", "under", "here", "now", "yes", "yeah", "yep", "no", "nope",
+    "okay", "well", "just", "only", "even", "still", "never", "always", "every", "all", "some", "any",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "first", "second",
+    "third", "last", "next", "old", "new", "good", "bad", "right", "wrong", "sir", "ma'am", "madam",
+    "mister", "miss", "mrs", "doctor", "captain", "chief", "officer", "agent", "judge", "coach",
+    "dad", "mom", "father", "mother", "brother", "sister", "son", "daughter", "uncle", "aunt",
+    "with", "from", "into", "onto", "upon", "about", "after", "before", "until", "while", "since",
+    "because", "though", "although", "unless", "whether", "both", "either", "neither", "each",
+    "much", "many", "more", "most", "other", "another", "such", "very", "too", "quite", "rather",
+    "enough", "almost", "nearly", "already", "yet", "soon", "later", "today", "tonight", "tomorrow",
+    "yesterday", "morning", "afternoon", "evening", "night", "day", "week", "month", "year",
+    "man", "woman", "men", "women", "boy", "girl", "kid", "kids", "guy", "guys", "people", "person",
+    "nobody", "somebody", "anybody", "everybody", "nothing", "something", "anything", "everything",
+    "someone", "anyone", "everyone", "no", "none", "mine", "ours", "our", "we", "us", "it", "its",
+}
+
+
+def recommend_style_for_screenplay(sb: dict[str, Any], project_name: str = "") -> dict[str, Any]:
+    """
+    Synthesize a world-matched Cinema Art-Direction Style (`style` dict) directly from the screenplay
+    (`sf-board.json`), selecting from 8 distinct film archetypes so every film gets a bespoke
+    typography pairing, color palette, flankers, and alignment.
+    """
+    text_chunks: list[str] = [project_name]
+    for sc in sb.get("scenes", []):
+        text_chunks.append(str(sc.get("name") or ""))
+        for sf_item in sc.get("sfs") or []:
+            text_chunks.append(str(sf_item.get("label") or ""))
+            text_chunks.append(str(sf_item.get("desc") or "")[:200])
+        for sh in (sc.get("shots") or [])[:15]:
+            text_chunks.append(str(sh.get("notes") or ""))
+            text_chunks.append(str(sh.get("text") or ""))
+    corpus = " ".join(text_chunks).lower()
+
+    archetypes: list[tuple[str, set[str], dict[str, Any]]] = [
+        (
+            "coastal_lifeguard_rescue",
+            {"lifeguard", "beach", "ocean", "surf", "shoreline", "pier", "bay", "tide", "coral", "marina", "boathouse", "jetty", "coast"},
+            {
+                "archetype": "coastal_lifeguard_rescue",
+                "title_font": "Cinzel-Bold",
+                "detail_font": "Optima-Bold",
+                "scene_title_font": "Futura-Bold",
+                "scene_detail_font": "AvenirNext-DemiBold",
+                "ending_title_font": "Cinzel-Bold",
+                "ending_detail_font": "Optima-Bold",
+                "title_size": 7.6,
+                "detail_size": 5.0,
+                "scene_title_size": 7.4,
+                "scene_detail_size": 5.0,
+                "ending_title_size": 10.5,
+                "ending_detail_size": 5.2,
+                "title_color": "#F4C86A",
+                "detail_color": "#D9EFF7",
+                "scene_title_color": "#7FD4E8",
+                "scene_detail_color": "#F3E9D2",
+                "ending_title_color": "#F4C86A",
+                "ending_detail_color": "#D9EFF7",
+                "stroke_color": "#091017",
+                "stroke_width": 0.04,
+                "shadow_alpha": 0.86,
+                "shadow_smoothing": 0.24,
+                "shadow_distance": 5.0,
+                "flankers": "~",
+                "scene_flankers": "•",
+                "align": "outer",
+                "order": "title-first",
+            },
+        ),
+        (
+            "equestrian_heritage_estate",
+            {"stallion", "horse", "stable", "equestrian", "thoroughbred", "paddock", "bridle", "dressage", "barn", "foal", "mare", "colt"},
+            {
+                "archetype": "equestrian_heritage_estate",
+                "title_font": "Baskerville-Bold",
+                "detail_font": "CormorantGaramond-BoldItalic",
+                "scene_title_font": "Cinzel-Bold",
+                "scene_detail_font": "Optima-Bold",
+                "ending_title_font": "Cinzel-Bold",
+                "ending_detail_font": "CormorantGaramond-BoldItalic",
+                "title_size": 7.8,
+                "detail_size": 5.2,
+                "scene_title_size": 7.6,
+                "scene_detail_size": 5.0,
+                "ending_title_size": 10.5,
+                "ending_detail_size": 5.4,
+                "title_color": "#F3CA6E",
+                "detail_color": "#F6EFE2",
+                "scene_title_color": "#E8C374",
+                "scene_detail_color": "#DFE6ED",
+                "ending_title_color": "#F3CA6E",
+                "ending_detail_color": "#F6EFE2",
+                "stroke_color": "#101216",
+                "stroke_width": 0.04,
+                "shadow_alpha": 0.85,
+                "shadow_smoothing": 0.24,
+                "shadow_distance": 5.0,
+                "flankers": "—",
+                "scene_flankers": "·",
+                "align": "center",
+                "order": "title-first",
+            },
+        ),
+        (
+            "legal_corporate_dynasty",
+            {"courtroom", "lawyer", "attorney", "judge", "deposition", "boardroom", "ceo", "executive", "penthouse", "billionaire", "trust", "inheritance", "hospital", "surgeon", "clinic"},
+            {
+                "archetype": "legal_corporate_dynasty",
+                "title_font": "Didot-Bold",
+                "detail_font": "AvenirNext-DemiBold",
+                "scene_title_font": "Optima-Bold",
+                "scene_detail_font": "GillSans-SemiBold",
+                "ending_title_font": "Didot-Bold",
+                "ending_detail_font": "AvenirNext-DemiBold",
+                "title_size": 7.8,
+                "detail_size": 4.9,
+                "scene_title_size": 7.4,
+                "scene_detail_size": 4.9,
+                "ending_title_size": 10.5,
+                "ending_detail_size": 5.2,
+                "title_color": "#EED484",
+                "detail_color": "#E4EBF2",
+                "scene_title_color": "#D8DEE9",
+                "scene_detail_color": "#E5C07B",
+                "ending_title_color": "#EED484",
+                "ending_detail_color": "#E4EBF2",
+                "stroke_color": "#0B0E14",
+                "stroke_width": 0.04,
+                "shadow_alpha": 0.86,
+                "shadow_smoothing": 0.24,
+                "shadow_distance": 5.0,
+                "flankers": "|",
+                "scene_flankers": "—",
+                "align": "outer",
+                "order": "title-first",
+            },
+        ),
+        (
+            "military_tactical_thriller",
+            {"military", "colonel", "general", "sergeant", "veteran", "tactical", "hangar", "radar", "bunker", "precinct", "detective", "federal", "swat", "convoy"},
+            {
+                "archetype": "military_tactical_thriller",
+                "title_font": "Futura-CondensedExtraBold",
+                "detail_font": "Menlo-Bold",
+                "scene_title_font": "AvenirNextCondensed-Heavy",
+                "scene_detail_font": "Menlo-Bold",
+                "ending_title_font": "Futura-CondensedExtraBold",
+                "ending_detail_font": "Menlo-Bold",
+                "title_size": 7.8,
+                "detail_size": 4.6,
+                "scene_title_size": 7.6,
+                "scene_detail_size": 4.6,
+                "ending_title_size": 10.5,
+                "ending_detail_size": 5.0,
+                "title_color": "#E8EEF2",
+                "detail_color": "#94D2BD",
+                "scene_title_color": "#F2B84B",
+                "scene_detail_color": "#C9D6DF",
+                "ending_title_color": "#E8EEF2",
+                "ending_detail_color": "#94D2BD",
+                "stroke_color": "#080B0E",
+                "stroke_width": 0.04,
+                "shadow_alpha": 0.88,
+                "shadow_smoothing": 0.24,
+                "shadow_distance": 5.0,
+                "flankers": "::",
+                "scene_flankers": "/",
+                "align": "outer",
+                "order": "detail-first",
+            },
+        ),
+        (
+            "high_society_gala_drama",
+            {"gala", "ballroom", "symphony", "violin", "piano", "opera", "couture", "auction", "gallery", "chandelier", "conservatory", "banquet"},
+            {
+                "archetype": "high_society_gala_drama",
+                "title_font": "BodoniSvtyTwoITCTT-Bold",
+                "detail_font": "Optima-Bold",
+                "scene_title_font": "Didot-Bold",
+                "scene_detail_font": "AvenirNext-DemiBold",
+                "ending_title_font": "BodoniSvtyTwoITCTT-Bold",
+                "ending_detail_font": "Optima-Bold",
+                "title_size": 7.8,
+                "detail_size": 5.0,
+                "scene_title_size": 7.6,
+                "scene_detail_size": 5.0,
+                "ending_title_size": 10.5,
+                "ending_detail_size": 5.2,
+                "title_color": "#F5D38C",
+                "detail_color": "#F4EFFA",
+                "scene_title_color": "#E2C2FF",
+                "scene_detail_color": "#F7EBD9",
+                "ending_title_color": "#F5D38C",
+                "ending_detail_color": "#F4EFFA",
+                "stroke_color": "#0E0C14",
+                "stroke_width": 0.04,
+                "shadow_alpha": 0.86,
+                "shadow_smoothing": 0.24,
+                "shadow_distance": 5.0,
+                "flankers": "◇",
+                "scene_flankers": "·",
+                "align": "center",
+                "order": "title-first",
+            },
+        ),
+        (
+            "rustic_heartland_americana",
+            {"diner", "farmhouse", "tractor", "sheriff", "county", "porch", "bakery", "orchard", "harvest", "mill", "workshop", "mechanic", "truck", "cafe"},
+            {
+                "archetype": "rustic_heartland_americana",
+                "title_font": "Charter-Black",
+                "detail_font": "GillSans-SemiBold",
+                "scene_title_font": "Copperplate-Bold",
+                "scene_detail_font": "Optima-Bold",
+                "ending_title_font": "Charter-Black",
+                "ending_detail_font": "GillSans-SemiBold",
+                "title_size": 7.6,
+                "detail_size": 5.0,
+                "scene_title_size": 7.4,
+                "scene_detail_size": 5.0,
+                "ending_title_size": 10.5,
+                "ending_detail_size": 5.2,
+                "title_color": "#F4B860",
+                "detail_color": "#F7EDE2",
+                "scene_title_color": "#E6CCB2",
+                "scene_detail_color": "#DDB892",
+                "ending_title_color": "#F4B860",
+                "ending_detail_color": "#F7EDE2",
+                "stroke_color": "#120E0A",
+                "stroke_width": 0.04,
+                "shadow_alpha": 0.86,
+                "shadow_smoothing": 0.24,
+                "shadow_distance": 5.0,
+                "flankers": "•",
+                "scene_flankers": "—",
+                "align": "outer",
+                "order": "title-first",
+            },
+        ),
+    ]
+
+    best_arch = None
+    best_hits = 0
+    for _, kw_set, style_dict in archetypes:
+        hits = sum(corpus.count(kw) for kw in kw_set)
+        if hits > best_hits:
+            best_hits = hits
+            best_arch = style_dict
+
+    if best_arch is not None and best_hits > 0:
+        return dict(best_arch)
+
+    return {
+        "archetype": "modern_prestige_drama",
+        "title_font": "Optima-ExtraBlack",
+        "detail_font": "AvenirNext-DemiBold",
+        "scene_title_font": "Cinzel-Bold",
+        "scene_detail_font": "GillSans-SemiBold",
+        "ending_title_font": "Cinzel-Bold",
+        "ending_detail_font": "Optima-Bold",
+        "title_size": 7.6,
+        "detail_size": 5.0,
+        "scene_title_size": 7.4,
+        "scene_detail_size": 5.0,
+        "ending_title_size": 10.5,
+        "ending_detail_size": 5.2,
+        "title_color": "#F2CC76",
+        "detail_color": "#EAEFF5",
+        "scene_title_color": "#D4E4F7",
+        "scene_detail_color": "#F2DFB6",
+        "ending_title_color": "#F2CC76",
+        "ending_detail_color": "#EAEFF5",
+        "stroke_color": "#0C0F14",
+        "stroke_width": 0.04,
+        "shadow_alpha": 0.86,
+        "shadow_smoothing": 0.24,
+        "shadow_distance": 5.0,
+        "flankers": "—",
+        "scene_flankers": "•",
+        "align": "outer",
+        "order": "title-first",
+    }
+
+
+def build_screenplay_subtitle_context(
+    video_segs: list[VideoSegment],
+    subs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """
+    Build a screenplay-grounded normalization context from `sf-board.json` (and any `*KICHBAN*.txt`
+    in the project directory) for `style_subtitle_track_in_place()`:
+    - `shot_windows`: timeline `[start_s, end_s]` intervals paired with exact screenplay dialogue (`sh["text"]`)
+    - `proper_nouns`: canonical casing map (`lower -> ProperCase`) for all character names, surnames, and locations
+    - `valid_lower_vocab`: set of all lowercase vocabulary words in the screenplay
+    - `canonical_phrases`: compiled regexes for numbered clauses (`Clause 9`, `Stall 9`) and multi-word proper names (`Coral Reach`)
+    - `recommended_style`: world-matched Cinema Art-Direction Style
+    """
+    sf_board_path: Path | None = None
+    for seg in video_segs:
+        if not seg.path:
+            continue
+        p = Path(seg.path)
+        for parent in (p.parent, p.parent.parent):
+            cand = parent / "sf-board.json"
+            if cand.exists():
+                sf_board_path = cand
+                break
+        if sf_board_path:
+            break
+
+    if not sf_board_path and subs:
+        sub_blob = " ".join(c.get("text", "") for c in subs[:40]).lower()
+        sub_words = _norm_words(sub_blob)
+        ws_root = Path("/Users/daho100/Documents/SF Board")
+        if ws_root.exists() and sub_words:
+            cands = list(ws_root.glob("*.project/sf-board.json"))
+            min_hits = max(6, int(len(sub_words) * 0.35))
+
+            def _score_cand(cand: Path) -> tuple[int, Path]:
+                try:
+                    raw = cand.read_text(encoding="utf-8")[:60000].lower()
+                    return sum(1 for w in sub_words if w in raw), cand
+                except Exception:
+                    return 0, cand
+
+            if cands:
+                with ThreadPoolExecutor(max_workers=min(DEFAULT_MAX_WORKERS, len(cands))) as pool:
+                    scored = list(pool.map(_score_cand, cands))
+                best_score, best_cand = max(scored, key=lambda x: x[0])
+                if best_score >= min_hits:
+                    sf_board_path = best_cand
+
+    if not sf_board_path:
+        return {}
+
+    try:
+        sb = json.loads(sf_board_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    clip_ranges: dict[str, list[tuple[float, float]]] = {}
+    for seg in video_segs:
+        cid = Path(seg.clip_name).stem
+        clip_ranges.setdefault(cid, []).append((seg.timeline_start_s, seg.timeline_end_s))
+
+    shot_windows: list[tuple[float, float, str]] = []
+    char_proper_nouns: dict[str, str] = {}
+    mid_sentence_proper_nouns: dict[str, str] = {}
+    lowercase_seen: set[str] = set()
+    valid_lower_vocab: set[str] = set()
+    phrase_candidates: set[str] = set()
+
+    def _harvest_dialogue_or_notes(txt: str) -> None:
+        if not txt:
+            return
+        for w in re.findall(r"[A-Za-z][A-Za-z0-9'-]*", txt):
+            wl = w.lower()
+            valid_lower_vocab.add(wl)
+            if w.islower():
+                lowercase_seen.add(wl)
+                lowercase_seen.add(wl.rstrip("s"))
+        # Harvest mid-sentence TitleCase words (preceded by a lowercase word and space)
+        for m_mid in re.finditer(r"(?<=[a-z]\s)([A-Z][a-z]{2,})\b", txt):
+            w = m_mid.group(1)
+            wl = w.lower()
+            if wl not in _STOP_PROPER_NOUNS:
+                mid_sentence_proper_nouns[wl] = w
+        # Numbered designations like Clause 9, Stall 9, Gate 4, Section 7, Pier 3, Row 4
+        for m_num in re.finditer(r"\b([A-Z][a-z]+)\s+(\d+)\b", txt):
+            phrase_candidates.add(f"{m_num.group(1)} {m_num.group(2)}")
+        # Multi-word capitalized proper names (e.g. Coral Reach, South Door, Tamarack Estate)
+        for m_prop in re.finditer(r"\b([A-Z][a-z]{2,})\s+([A-Z][a-z]{2,})\b", txt):
+            w1, w2 = m_prop.group(1), m_prop.group(2)
+            if w1.lower() not in _STOP_PROPER_NOUNS and w2.lower() not in _STOP_PROPER_NOUNS:
+                phrase_candidates.add(f"{w1} {w2}")
+
+    # Harvest character names from scenes[0].sfs (only CHAR/AL/named character refs, not BG/PROP)
+    for ref in (sb.get("scenes") or [{}])[0].get("sfs", []):
+        rid = str(ref.get("id") or "")
+        is_char_ref = bool(
+            re.match(r"^(?:CHAR|AL)\d+", rid)
+            or (re.match(r"^REF_([A-Z0-9]+)_", rid) and not re.match(r"^REF_(?:BG|PROP|PROPS|LOC|SCENE)_", rid))
+        )
+        lbl = str(ref.get("label") or "")
+        lbl_head = lbl.split("—")[0].split("-")[0].split("(")[0].strip()
+        if is_char_ref and lbl_head:
+            title_words = [
+                w.capitalize() if w.isupper() else w
+                for w in re.findall(r"[A-Za-z][A-Za-z'-]*", lbl_head)
+                if len(w) >= 3 and w.lower() not in _STOP_PROPER_NOUNS
+            ]
+            for tw in title_words:
+                char_proper_nouns[tw.lower()] = tw
+                valid_lower_vocab.add(tw.lower())
+            if len(title_words) == 2:
+                phrase_candidates.add(f"{title_words[0]} {title_words[1]}")
+        _harvest_dialogue_or_notes(str(ref.get("desc") or "")[:400])
+
+    # Harvest scenes and shot dialogues
+    for sc in sb.get("scenes", [])[1:]:
+        sname = str(sc.get("name") or "")
+        for m_sc_prop in re.finditer(r"\b([A-Z]{3,})\s+([A-Z]{3,})\b", sname):
+            w1, w2 = m_sc_prop.group(1).capitalize(), m_sc_prop.group(2).capitalize()
+            if w1.lower() not in _STOP_PROPER_NOUNS and w2.lower() not in _STOP_PROPER_NOUNS:
+                phrase_candidates.add(f"{w1} {w2}")
+        for sh in (sc.get("shots") or sc.get("sfs") or []):
+            cid = sh.get("id")
+            dlg = str(sh.get("text") or "").strip()
+            notes = str(sh.get("notes") or "").strip()
+            _harvest_dialogue_or_notes(dlg)
+            _harvest_dialogue_or_notes(notes)
+            if cid and dlg and cid in clip_ranges:
+                for lo_s, hi_s in clip_ranges[cid]:
+                    shot_windows.append((lo_s, hi_s, dlg))
+
+    # Also check for any *KICHBAN*.txt in the project directory
+    proj_folder = sf_board_path.parent
+    for kb_file in list(proj_folder.glob("*KICHBAN*.txt")) + list(proj_folder.glob("*kichban*.txt")):
+        try:
+            _harvest_dialogue_or_notes(kb_file.read_text(encoding="utf-8")[:80000])
+        except Exception:
+            pass
+
+    # Combine character proper nouns + mid-sentence proper nouns that never appear in lowercase
+    proper_nouns: dict[str, str] = {}
+    for k, v in mid_sentence_proper_nouns.items():
+        if k not in lowercase_seen:
+            proper_nouns[k] = v
+    for k, v in char_proper_nouns.items():
+        proper_nouns[k] = v
+
+    # Build canonical phrase regexes
+    canonical_phrases: list[tuple[re.Pattern[str], str]] = []
+    homophone_map: dict[str, str] = {
+        "clause": r"(?:clause|claws|close|clothes|claus)",
+        "stall": r"(?:stall|stole|still|tall)",
+        "pier": r"(?:pier|peer|beer)",
+    }
+    for phr in sorted(phrase_candidates):
+        parts = phr.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            w1_l = parts[0].lower()
+            pat_w1 = homophone_map.get(w1_l, re.escape(parts[0]))
+            canonical_phrases.append(
+                (re.compile(rf"\b{pat_w1}\s+{re.escape(parts[1])}\b", re.I), phr)
+            )
+        elif len(parts) == 2:
+            w1, w2 = parts[0], parts[1]
+            # Exact case-insensitive match
+            canonical_phrases.append(
+                (re.compile(rf"\b{re.escape(w1)}\s+{re.escape(w2)}\b", re.I), phr)
+            )
+            # Phonetic neighbor on second word when first word matches and second word starts with same 3 letters (e.g. Coral Reef -> Coral Reach)
+            if len(w2) >= 4:
+                prefix3 = re.escape(w2[:3])
+                canonical_phrases.append(
+                    (re.compile(rf"\b{re.escape(w1)}\s+{prefix3}[a-z]+\b", re.I), phr)
+                )
+
+    rec_style = recommend_style_for_screenplay(sb, str(sf_board_path.parent.name))
+    return {
+        "shot_windows": shot_windows,
+        "proper_nouns": proper_nouns,
+        "valid_lower_vocab": valid_lower_vocab,
+        "canonical_phrases": canonical_phrases,
+        "recommended_style": rec_style,
     }
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
     project_dir = resolve_project_dir(args.project)
     draft = load_draft(project_dir)
-    video_segs = load_video_timeline(draft)
-    scenes = group_scene_boundaries(video_segs)
-    subs = extract_subtitles(draft)
-    cards = extract_existing_cards(draft)
-    gt = extract_screenplay_ground_truth(video_segs, subs)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f_vsegs = pool.submit(load_video_timeline, draft)
+        f_subs = pool.submit(extract_subtitles, draft)
+        f_cards = pool.submit(extract_existing_cards, draft)
+        video_segs = f_vsegs.result()
+        subs = f_subs.result()
+        cards = f_cards.result()
+        f_scenes = pool.submit(group_scene_boundaries, video_segs)
+        f_gt = pool.submit(extract_screenplay_ground_truth, video_segs, subs)
+        scenes = f_scenes.result()
+        gt = f_gt.result()
+
+    sub_status = (
+        "ready"
+        if subs
+        else "none_in_draft_do_not_search_other_files (auto-captions not generated in CapCut yet)"
+    )
 
     payload = {
         "project": project_dir.name,
@@ -1001,6 +1822,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         ),
         "video_segment_count": len(video_segs),
         "scene_count": len(gt.get("story_scenes") or scenes),
+        "recommended_style": gt.get("recommended_style", {}),
         "story_scenes": gt.get("story_scenes") or scenes,
         "character_appearances": gt.get("character_appearances", []),
         "recommended_probe_windows": gt.get("recommended_probe_windows", ""),
@@ -1019,33 +1841,37 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         "existing_card_segment_count": len(cards),
         "existing_cards": cards,
         "subtitle_cue_count": len(subs),
+        "subtitle_status": sub_status,
         "subtitles": subs,
     }
 
-    if args.out:
-        out_path = Path(os.path.expanduser(args.out))
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with out_path.open("w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-        print(
-            json.dumps(
-                {
-                    "project": payload["project"],
-                    "duration_sec": payload["duration_sec"],
-                    "video_segment_count": payload["video_segment_count"],
-                    "scene_count": payload["scene_count"],
-                    "character_count": len(payload.get("character_appearances", [])),
-                    "screenplay_source": payload.get("screenplay_source"),
-                    "recommended_probe_windows": payload.get("recommended_probe_windows", ""),
-                    "existing_card_segment_count": payload["existing_card_segment_count"],
-                    "subtitle_cue_count": payload["subtitle_cue_count"],
-                    "saved_to": str(out_path),
-                },
-                indent=2,
-            )
+    out_path = (
+        Path(os.path.expanduser(args.out))
+        if getattr(args, "out", None)
+        else Path(f"/tmp/inspect_{project_dir.name}.json")
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    print(
+        json.dumps(
+            {
+                "project": payload["project"],
+                "duration_sec": payload["duration_sec"],
+                "video_segment_count": payload["video_segment_count"],
+                "scene_count": payload["scene_count"],
+                "character_count": len(payload.get("character_appearances", [])),
+                "screenplay_source": payload.get("screenplay_source"),
+                "recommended_style_archetype": (payload.get("recommended_style") or {}).get("archetype"),
+                "recommended_probe_windows": payload.get("recommended_probe_windows", ""),
+                "existing_card_segment_count": payload["existing_card_segment_count"],
+                "subtitle_cue_count": payload["subtitle_cue_count"],
+                "subtitle_status": sub_status,
+                "saved_to": str(out_path),
+            },
+            indent=2,
         )
-    else:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    )
     return 0
 
 
@@ -1071,56 +1897,141 @@ def cmd_probe(args: argparse.Namespace) -> int:
             t = float(rw)
             windows.append((max(0.0, t - 1.0), t + 5.0))
 
-    report_windows: list[dict[str, Any]] = []
-    for w_idx, (w_start, w_end) in enumerate(windows, start=1):
-        cuts_info = detect_window_cuts(video_segs, w_start, w_end)
-        all_cuts = cuts_info["all_cuts"]
-        # Sample timestamps: start + every sub-shot midpoint + regular step
+    fast_cuts = extract_fast_timeline_cuts(video_segs)
+
+    # Phase 1: Compute window cuts across all windows in parallel
+    def _compute_window_cuts(item: tuple[int, tuple[float, float]]) -> dict[str, Any]:
+        w_idx, (w_start, w_end) = item
+        win_fast = [c for c in fast_cuts if w_start + 0.15 < c < w_end - 0.15]
+        if getattr(args, "scdet", False) or not win_fast:
+            cuts_info = detect_window_cuts(video_segs, w_start, w_end)
+            all_cuts = sorted(set(cuts_info["all_cuts"] + win_fast))
+            seg_cuts = cuts_info["segment_cuts"]
+            scdet_cuts = cuts_info["scdet_cuts"]
+        else:
+            seg_cuts = [
+                round(s.timeline_start_s, 2)
+                for s in video_segs
+                if w_start < s.timeline_start_s < w_end
+            ]
+            scdet_cuts = [c for c in win_fast if c not in seg_cuts]
+            all_cuts = sorted(set(win_fast))
+
         boundaries = [w_start] + [c for c in all_cuts if w_start < c < w_end] + [w_end]
-        sample_times: list[float] = []
-        for i in range(len(boundaries) - 1):
-            a, b = boundaries[i], boundaries[i + 1]
-            if b - a < 0.35:
-                continue
-            sample_times.append(round(a + 0.35, 2))
-            if b - a >= 2.5:
-                sample_times.append(round((a + b) / 2.0, 2))
-            if b - a >= 4.5:
-                sample_times.append(round(b - 0.5, 2))
-        sample_times = sorted(set(sample_times))
-
-        frame_items: list[tuple[float, str, Path]] = []
-        for t_sec in sample_times:
-            f_jpg = frames_dir / f"w{w_idx:02d}_{int(round(t_sec*100)):06d}.jpg"
-            ok, cname = extract_frame_at_timeline_sec(video_segs, t_sec, f_jpg)
-            if ok:
-                frame_items.append((t_sec, cname, f_jpg))
-
-        sheet_path = out_dir / f"sheet_{w_idx:02d}_{int(w_start):04d}_{int(w_end):04d}.jpg"
-        build_contact_sheet(frame_items, sheet_path)
-
-        # Build clean sub-shots list bounded by cuts
-        sub_shots = []
+        sub_intervals: list[tuple[float, float, float, Path]] = []
         for i in range(len(boundaries) - 1):
             a, b = round(boundaries[i], 2), round(boundaries[i + 1], 2)
-            if b - a >= 0.3:
-                sub_shots.append({"start_s": a, "end_s": b, "dur_s": round(b - a, 2)})
+            if b - a >= 1.2:
+                mid_t = round((a + b) * 0.5, 2)
+                f_jpg = frames_dir / f"w{w_idx:02d}_{int(round(mid_t*100)):06d}.jpg"
+                sub_intervals.append((a, b, mid_t, f_jpg))
+        return {
+            "w_idx": w_idx,
+            "w_start": w_start,
+            "w_end": w_end,
+            "seg_cuts": seg_cuts,
+            "scdet_cuts": scdet_cuts,
+            "all_cuts": all_cuts,
+            "sub_intervals": sub_intervals,
+        }
 
+    with ThreadPoolExecutor(max_workers=DEFAULT_MAX_WORKERS) as pool:
+        win_metas = list(pool.map(_compute_window_cuts, enumerate(windows, start=1)))
+
+    # Phase 2: Flatten all frame extractions + negative-space scoring across all windows into one parallel pool
+    flat_frame_tasks: list[tuple[int, float, float, float, Path]] = []
+    for wm in win_metas:
+        w_idx = wm["w_idx"]
+        for a, b, mid_t, f_jpg in wm["sub_intervals"]:
+            flat_frame_tasks.append((w_idx, a, b, mid_t, f_jpg))
+
+    def _extract_and_score(task: tuple[int, float, float, float, Path]) -> tuple[int, float, float, float, Path, bool, str, str]:
+        w_idx, a, b, mid_t, f_jpg = task
+        ok, cname = extract_frame_at_timeline_sec(video_segs, mid_t, f_jpg)
+        best_anc = score_frame_negative_space(f_jpg).get("best_anchor", "lower-left") if (ok and f_jpg.exists()) else "lower-left"
+        return (w_idx, a, b, mid_t, f_jpg, ok, cname, best_anc)
+
+    flat_results: list[tuple[int, float, float, float, Path, bool, str, str]] = []
+    if flat_frame_tasks:
+        with ThreadPoolExecutor(max_workers=DEFAULT_MAX_WORKERS) as pool:
+            flat_results = list(pool.map(_extract_and_score, flat_frame_tasks))
+
+    by_win: dict[int, list[tuple[float, float, float, Path, bool, str, str]]] = {}
+    for w_idx, a, b, mid_t, f_jpg, ok, cname, best_anc in flat_results:
+        by_win.setdefault(w_idx, []).append((a, b, mid_t, f_jpg, ok, cname, best_anc))
+
+    # Phase 3: Build per-window contact sheets and overview batch sheets in parallel
+    report_windows: list[dict[str, Any]] = []
+    all_frame_items: list[tuple[float, str, Path]] = []
+    sheet_jobs: list[tuple[list[tuple[float, str, Path]], Path, int]] = []
+
+    for wm in win_metas:
+        w_idx = wm["w_idx"]
+        w_start, w_end = wm["w_start"], wm["w_end"]
+        w_items = by_win.get(w_idx, [])
+        frame_items: list[tuple[float, str, Path]] = []
+        sub_shots: list[dict[str, Any]] = []
+        for a, b, mid_t, f_jpg, ok, cname, best_anc in w_items:
+            if ok:
+                frame_items.append((mid_t, cname, f_jpg))
+                all_frame_items.append((mid_t, f"{a:.1f}-{b:.1f}s ({best_anc})", f_jpg))
+            sub_shots.append(
+                {
+                    "start_s": a,
+                    "end_s": b,
+                    "dur_s": round(b - a, 2),
+                    "best_anchor": best_anc,
+                }
+            )
+        sheet_path = out_dir / f"sheet_{w_idx:02d}_{int(w_start):04d}_{int(w_end):04d}.jpg"
+        if frame_items:
+            sheet_jobs.append((frame_items, sheet_path, 4))
         report_windows.append(
             {
                 "window": f"{w_start:.2f}-{w_end:.2f}s",
-                "segment_cuts": cuts_info["segment_cuts"],
-                "scdet_cuts": cuts_info["scdet_cuts"],
-                "all_cuts": all_cuts,
+                "segment_cuts": wm["seg_cuts"],
+                "scdet_cuts": wm["scdet_cuts"],
+                "all_cuts": wm["all_cuts"],
                 "sub_shots": sub_shots,
-                "contact_sheet": str(sheet_path) if sheet_path.exists() else None,
+                "contact_sheet": str(sheet_path) if frame_items else None,
             }
         )
 
+    batch_paths: list[Path] = []
+    batch_size = 24
+    for b_idx in range(0, len(all_frame_items), batch_size):
+        chunk = all_frame_items[b_idx : b_idx + batch_size]
+        b_path = out_dir / f"probe_batch_{(b_idx // batch_size) + 1:02d}.jpg"
+        batch_paths.append(b_path)
+        sheet_jobs.append((chunk, b_path, 4))
+
+    if sheet_jobs:
+        with ThreadPoolExecutor(max_workers=DEFAULT_MAX_WORKERS) as pool:
+            list(pool.map(lambda jb: build_contact_sheet(jb[0], jb[1], cols=jb[2]), sheet_jobs))
+
+    batch_sheets = [str(bp) for bp in batch_paths if bp.exists()]
+
     report_path = out_dir / "probe_report.json"
+    out_payload = {
+        "project": project_dir.name,
+        "report": str(report_path),
+        "batch_sheets": batch_sheets,
+        "windows": report_windows,
+    }
     with report_path.open("w", encoding="utf-8") as fh:
-        json.dump({"project": project_dir.name, "windows": report_windows}, fh, indent=2)
-    print(json.dumps({"project": project_dir.name, "report": str(report_path), "windows": report_windows}, indent=2))
+        json.dump(out_payload, fh, indent=2)
+    print(
+        json.dumps(
+            {
+                "project": project_dir.name,
+                "window_count": len(report_windows),
+                "sub_shot_count": len(all_frame_items),
+                "batch_sheets": batch_sheets,
+                "saved_report": str(report_path),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -1129,25 +2040,31 @@ def render_preview_sheet(
     applied_cards: list[dict[str, Any]],
     preset: FilmCardStyle,
     out_sheet_path: Path,
-) -> str | None:
+) -> tuple[str | None, list[str]]:
     video_segs = load_video_timeline(draft)
     if not video_segs or not applied_cards:
-        return None
+        return None, []
     tmp_dir = out_sheet_path.parent / f"_preview_frames_{out_sheet_path.stem}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    rendered_items: list[Path] = []
+
+    card_specs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for c in applied_cards:
+        raw_c = c.pop("_raw_card", None) or dict(c)
+        card_specs.append((c, raw_c))
+
+    def _render_one(pair: tuple[dict[str, Any], dict[str, Any]]) -> tuple[int, Path | None]:
+        c, raw_c = pair
+        idx_c = int(c["index"])
         mid_t = round((float(c["start_s"]) + float(c["end_s"])) * 0.5, 2)
-        raw_jpg = tmp_dir / f"raw_{c['index']:02d}.jpg"
-        comp_jpg = tmp_dir / f"comp_{c['index']:02d}.jpg"
-        ok, cname = extract_frame_at_timeline_sec(
+        raw_jpg = tmp_dir / f"raw_{idx_c:02d}.jpg"
+        comp_jpg = tmp_dir / f"comp_{idx_c:02d}.jpg"
+        ok, _ = extract_frame_at_timeline_sec(
             video_segs, mid_t, raw_jpg, width=960, height=540, include_guides=False
         )
         if not ok:
-            continue
-        raw_c = c.pop("_raw_card", None) or c
+            return idx_c, None
         t_st, d_st, _, _ = resolve_card_styles(raw_c, preset)
-        lbl = f"#{c['index']:02d} {c['start_s']:.1f}-{c['end_s']:.1f}s | x={c['x']:+.2f} y={c['y_main']:+.2f} sc={c['scale']:.2f}"
+        lbl = f"#{idx_c:02d} {c['start_s']:.1f}-{c['end_s']:.1f}s | x={c['x']:+.2f} y={c['y_main']:+.2f} sc={c['scale']:.2f}"
         if render_card_on_frame(
             raw_jpg,
             comp_jpg,
@@ -1162,25 +2079,48 @@ def render_preview_sheet(
             scale=float(c["scale"]),
             label=lbl,
         ):
-            rendered_items.append(comp_jpg)
+            return idx_c, comp_jpg
+        return idx_c, None
 
+    with ThreadPoolExecutor(max_workers=DEFAULT_MAX_WORKERS) as pool:
+        res_list = sorted(pool.map(_render_one, card_specs), key=lambda x: x[0])
+
+    rendered_items = [p for _, p in res_list if p is not None]
     if not rendered_items:
-        return None
+        return None, []
 
     from PIL import Image
-    cols = 3
-    rows = (len(rendered_items) + cols - 1) // cols
-    tw, th = 640, 360
-    sheet = Image.new("RGB", (cols * tw, rows * th), (12, 14, 18))
-    for i, p in enumerate(rendered_items):
-        try:
-            im = Image.open(p).resize((tw, th))
-            sheet.paste(im, ((i % cols) * tw, (i // cols) * th))
-        except Exception:
-            pass
+
+    tw, th = 480, 270
     out_sheet_path.parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(out_sheet_path, quality=88)
-    return str(out_sheet_path)
+
+    def _save_grid(job: tuple[list[Path], Path, int, int]) -> str:
+        items_p, target_p, g_cols, qual = job
+        g_rows = (len(items_p) + g_cols - 1) // g_cols
+        grid_im = Image.new("RGB", (g_cols * tw, g_rows * th), (12, 14, 18))
+        for k, p in enumerate(items_p):
+            try:
+                with Image.open(p) as im:
+                    grid_im.paste(im.resize((tw, th)), ((k % g_cols) * tw, (k // g_cols) * th))
+            except Exception:
+                pass
+        grid_im.save(target_p, quality=qual)
+        return str(target_p)
+
+    cols = 4 if len(rendered_items) > 12 else 3
+    grid_jobs: list[tuple[list[Path], Path, int, int]] = [(rendered_items, out_sheet_path, cols, 82)]
+    if len(rendered_items) > 16:
+        per_page = 16
+        for pg_idx in range(0, len(rendered_items), per_page):
+            chunk = rendered_items[pg_idx : pg_idx + per_page]
+            pg_num = (pg_idx // per_page) + 1
+            pg_file = out_sheet_path.parent / f"{out_sheet_path.stem}_p{pg_num}.jpg"
+            grid_jobs.append((chunk, pg_file, 4, 84))
+
+    with ThreadPoolExecutor(max_workers=min(DEFAULT_MAX_WORKERS, len(grid_jobs))) as pool:
+        saved_grids = list(pool.map(_save_grid, grid_jobs))
+
+    return saved_grids[0], saved_grids[1:]
 
 
 def cmd_apply(args: argparse.Namespace) -> int:
@@ -1193,26 +2133,42 @@ def cmd_apply(args: argparse.Namespace) -> int:
     summary = apply_plan_to_draft(
         draft,
         plan,
-        snap_to_cuts=not bool(args.no_snap_cuts),
+        snap_to_cuts=not bool(getattr(args, "no_snap_cuts", False)),
     )
     preset = summary.pop("_preset")
 
-    if not args.dry_run:
+    if not getattr(args, "dry_run", False):
         synced = save_and_sync_draft(project_dir, draft)
         summary["synced_files"] = synced
     else:
         summary["dry_run"] = True
 
-    preview_target = (
-        Path(os.path.expanduser(args.preview))
-        if getattr(args, "preview", None)
-        else plan_path.parent / f"preview_{plan_path.stem}.jpg"
-    )
-    preview_sheet = render_preview_sheet(draft, summary["cards"], preset, preview_target)
-    if preview_sheet:
-        summary["preview_sheet"] = preview_sheet
+    if getattr(args, "no_preview", False) or getattr(args, "preview", None) == "":
+        for c in summary["cards"]:
+            c.pop("_raw_card", None)
+    else:
+        preview_target = (
+            Path(os.path.expanduser(args.preview))
+            if getattr(args, "preview", None)
+            else plan_path.parent / f"preview_{plan_path.stem}.jpg"
+        )
+        preview_sheet, preview_pages = render_preview_sheet(draft, summary["cards"], preset, preview_target)
+        if preview_sheet:
+            summary["preview_sheet"] = preview_sheet
+        if preview_pages:
+            summary["preview_pages"] = preview_pages
 
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    applied_log_path = plan_path.parent / f"applied_{plan_path.stem}.json"
+    with applied_log_path.open("w", encoding="utf-8") as fh:
+        json.dump(summary, fh, ensure_ascii=False, indent=2)
+
+    compact_stdout = {
+        k: v
+        for k, v in summary.items()
+        if k != "cards"
+    }
+    compact_stdout["applied_cards_log"] = str(applied_log_path)
+    print(json.dumps(compact_stdout, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1240,12 +2196,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_prb.add_argument("project", help="CapCut project name or path")
     p_prb.add_argument("--windows", required=True, help="Comma-separated timeline windows in sec, e.g. '0-25,200-212'")
     p_prb.add_argument("--out", required=True, help="Output directory for contact sheets and probe_report.json")
+    p_prb.add_argument("--scdet", action="store_true", help="Force full ffmpeg scdet even when sf-board.json sub-shots exist")
     p_prb.set_defaults(func=cmd_probe)
 
     p_app = sub.add_parser("apply", help="Apply card + subtitle plan.json directly to CapCut project and render WYSIWYG preview sheet.")
     p_app.add_argument("project", help="CapCut project name or path")
     p_app.add_argument("--plan", required=True, help="Path to plan.json")
     p_app.add_argument("--preview", help="Optional path for WYSIWYG preview contact sheet (.jpg)")
+    p_app.add_argument("--no-preview", action="store_true", help="Skip rendering preview sheet for instant (<0.3s) application")
     p_app.add_argument("--no-snap-cuts", action="store_true", help="Disable automatic end-snapping to nearby shot cuts")
     p_app.add_argument("--dry-run", action="store_true", help="Compute and validate without writing to CapCut project")
     p_app.set_defaults(func=cmd_apply)
@@ -1267,7 +2225,7 @@ def build_parser() -> argparse.ArgumentParser:
         func=lambda a: (
             print(
                 json.dumps(
-                    {sp: ensure_capcut_font(sp) for sp in a.specs},
+                    ensure_capcut_fonts_parallel(a.specs),
                     indent=2,
                 )
             )

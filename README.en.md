@@ -1,33 +1,31 @@
-# CapCut Cinematic Cards & Subtitles (`v0.6.0`)
+# CapCut Cinematic Cards & Subtitles (`v0.7.0`)
 
 Language: [Tiếng Việt](README.md) | **English**
 
-Zero-preset, AI-art-directed **Location, Time, Character, and `THE END` title cards** plus **zero-drift in-place cinematic subtitles** for macOS CapCut Desktop drafts (`draft_info.json`), built on **YAGNI** (`inspect` -> `probe` -> `apply` + `preview_sheet` verification in `< 6 seconds`).
+Zero-preset, AI-art-directed **Location, Time, Character, and `THE END` title cards** plus **screenplay-grounded in-place cinematic subtitles** for macOS CapCut Desktop drafts (`draft_info.json`), built on **YAGNI** (`inspect` -> `probe` -> `apply` + `preview_sheet` verification in `< 6 seconds` using 16-thread parallelism).
 
 ---
 
-## Core Capabilities in `v0.6.0`
+## Core Capabilities in `v0.7.0`
 
-1. **Zero Canned Presets & Automatic Google Fonts Fetching (`1,600+` Fonts)**:
-   - Art-directs every film from scratch based on its screenplay (`inspect` + `sf-board.json`).
-   - Extracts macOS `.ttc` faces or **downloads any Google Font on demand** (`PlayfairDisplay-Bold`, `CormorantGaramond-BoldItalic`, `Cinzel-Bold`, `BodoniModa-Bold`, `DMSerifDisplay-Regular`, `InstrumentSerif-Italic`, `Rye-Regular`, `BebasNeue-Regular`, `JetBrainsMono-SemiBold`), normalizes `hhea`/`OS/2` vertical metrics (`1.20 * upm`), and installs them into CapCut's sandbox container in `< 0.4s`.
+1. **16-Thread Parallel Pipeline (`< 6s` Cold Cache, `< 1.5s` Warm Cache) & Screenplay World Archetypes**:
+   - Parallelizes `inspect` (`0.4s`), `probe` (`0.4s–5.6s`), and `apply + preview_pages` (`1.1s–3.4s`) across 16 worker threads with frame caching and in-memory font caching.
+   - Automatically synthesizes a screenplay-matched `recommended_style` across 8 distinct cinema art-direction archetypes (`coastal_lifeguard_rescue`, `rustic_heartland_americana`, `legal_corporate_dynasty`, `military_tactical_thriller`, `high_society_gala_drama`, `equestrian_heritage_estate`, `modern_prestige_drama`) with a built-in Anti-Clone Guard.
 
-2. **Multi-Span Editorial Rich Text (`styles[]`) & Glyph-Verified Flankers**:
-   - Generates multi-span `styles[]` within a single CapCut text layer:
-     - **Title Line**: Automatically styles honorific prefixes (`Dr. `, `Lt. `, `Judge `, `Sheikh `) and age suffixes (`, 74`) at `0.82–0.85x` size in `accent_color` while keeping the core name at `1.0x` in `title_color`.
-     - **Detail / Role / Time Line**: Highlights the primary role/status badge (`$5M Champion`, `Stable Hand`, `Head Trainer`, `Morning`) in `detail_accent_color`, renders the secondary affiliation/context in `char_detail_color`, and wraps with ornamental flankers (`—`, `« »`, `·`, `[ ]`, `//`) verified against the font's Unicode `cmap`.
+2. **Screenplay-Grounded Subtitle Normalization & Classic Warm Cinema Yellow Default (`Seravek-Medium` `4.2` `#E5CE6E`)**:
+   - Honors user-requested subtitle styles when specified, and defaults otherwise to the classic Warm Cinema Yellow Boxless preset (`Seravek-Medium`, `size: 4.2`, `text_size: 30`, `#E5CE6E`, `y: -0.78`, `stroke_width: 0.028`, `shadow_alpha: 0.82`, `shadow_smoothing: 2.58`, `shadow_distance: 1.8`, `check_flag: 47`).
+   - Aligns every subtitle cue `[start_s, end_s]` against the overlapping timeline shot's screenplay dialogue (`sf-board.json` / `*KICHBAN*.txt`) to automatically fix split compound words (`life Lord` -> `lifeguard`), contextual neighbor mishearings (`vacate this Jack` -> `vacate this shack`, `Coral Reef` -> `Coral Reach`), numbered clauses (`claws 9` -> `Clause 9`), and character proper nouns (`lanira` -> `Lenora`, `alford` -> `Alford`).
 
-3. **Centered-Axis Symmetry (`align: "center"`) & Trim/Cut-Immune Timing**:
-   - Locks `x_title == x_detail` on the exact same vertical center axis while anchoring the outer edge at `±0.88` using calibrated CapCut pixel widths (`11.2 px/em/size` on `1920x1080`).
-   - Recursively unwraps trimmed/split `Compound Clips` (`materials.drafts`) with exact `source_timerange` intersection, projects `sf-board.json` shot breakdowns (`goc`) onto surviving timeline seconds (`TL x-ys` vs `TRIMMED_OUT`), and locks `[start_s, end_s]` inside a single continuous `scdet` camera sub-shot.
+3. **Multi-Span Editorial Rich Text (`styles[]`) & Glyph-Verified Flankers**:
+   - Generates multi-span `styles[]` within a single CapCut text layer and wraps detail lines with glyph-verified ornamental flankers (`~`, `—`, `•`, `|`, `::`, `◇`).
 
-4. **Native CapCut `Fade In` + `Fade Out` (Staggered Entrance `0.10s`) & WYSIWYG Preview Sheet**:
-   - Attaches native CapCut `sticker_animation` entries (`Fade In`: `6724916044072227332`, `Fade Out`: `6724919382104871427`, `start = segment_duration_us - fade_out_us`) with a `0.10s` secondary-line stagger, and renders `preview_<plan>.jpg` on actual video frames for visual verification.
+4. **Automatic Glare/Signage Avoidance (`score_frame_negative_space`) & Native CapCut `Fade In` + `Fade Out`**:
+   - Scores all 4 frame corners (`lower-left`, `lower-right`, `upper-left`, `upper-right`) to avoid bright white signage/glare and renders paginated `4x4` WYSIWYG preview sheets (`preview_<plan>_p1.jpg`, ...).
 
 ---
 
-## Quick Install (`v0.6.0`)
+## Quick Install (`v0.7.0`)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.6.0/install.py | python3
+curl -fsSL https://raw.githubusercontent.com/Ductoii/capcut-cinematic-cards/v0.7.0/install.py | python3
 ```

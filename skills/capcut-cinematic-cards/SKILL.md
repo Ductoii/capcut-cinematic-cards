@@ -5,50 +5,48 @@ description: Use when adding or styling cinematic character introduction cards, 
 
 # CapCut Cinematic Cards & Subtitles
 
-Fast, zero-preset, AI-art-directed CapCut title card & subtitle engine (`inspect` -> `probe` -> `apply` + `preview_sheet` verification in `< 6 seconds`).
+Fast, zero-preset, AI-art-directed CapCut title card & subtitle engine (`inspect` -> `probe` -> `apply` + `preview_sheet` verification within a strict **10–20 minute** end-to-end time budget; each CLI command finishes in `< 5 seconds` so it never hangs or drops into background tasks).
 
-## Core Principles (YAGNI — AI Art Direction, Zero Canned Templates)
+## Core Principles (YAGNI — AI Art Direction, Zero Canned Templates, 10–20 Min Budget)
 
-1. **No Canned Presets & Automatic Google Fonts Fetching**:
-   - Do **not** reuse a rigid template across movies. Read the screenplay (`*BANGTRA*.txt`, `sf-board.json`, or `inspect` output) and inspect the actual shots (`probe` contact sheets), then run `cards.py fonts` to pick a bespoke font pairing — either from local macOS fonts OR **any of 1,600+ Google Fonts** (`PlayfairDisplay-Bold`, `Cinzel-Bold`, `CormorantGaramond-BoldItalic`, `BodoniModa-Bold`, `DMSerifDisplay-Regular`, `InstrumentSerif-Italic`, `SpaceGrotesk-SemiBold`, `BebasNeue-Regular`, `Rye-Regular`, etc.). `ensure_capcut_font()` automatically downloads missing Google Fonts, normalizes their vertical metrics (`1.20 * upm`), binds their PostScript name, and installs them into CapCut on the fly.
-2. **Expressive Cinema Art Direction (Multi-Span Rich Text, Flankers, Archetype Accents & Stagger)**:
-   - **Calligraphic / Genre Font Pairings**: Avoid pairing serif titles with flat corporate UI sans-serifs on drama/period films. Pair a sculptural display/serif title (`PlayfairDisplay-Bold`, `Cinzel-Bold`, `BodoniModa-Bold`, `DMSerifDisplay-Regular`) with a calligraphic/editorial italic (`CormorantGaramond-BoldItalic`, `PlayfairDisplay-BoldItalic`, `InstrumentSerif-Italic`, `LibreBaskerville-Italic`) or a high-character genre display/mono font (`Rye-Regular`, `SpecialElite-Regular`, `JetBrainsMono-SemiBold`, `Syne-Bold`).
-   - **Multi-Span Rich Text Contrast (`styles[]`)**: `build_rich_text_content` automatically generates multi-span `styles[]` within a single CapCut text layer — styling honorific prefixes (`Dr. `, `Lt. `, `Judge `, `Sheikh `) and age suffixes (`, 74`) at `0.82–0.85x` size in `accent_color`, highlighting the primary role/status badge (`$5M Champion`, `Stable Hand`, `Head Trainer`) in `detail_accent_color` while keeping the secondary affiliation in `char_detail_color`, and coloring editorial flankers (`—`, `« »`, `·`, `[ ]`) in `flanker_color` at `0.88x` size.
-   - **Ornamental Flankers (`flankers`, `scene_flankers`) & Staggered Entrance (`stagger_sec`)**: Wrap detail lines with screenplay-appropriate flankers (`"—"`, `"« »"`, `"·"`, `"[ ]"`, `"//"`) — `format_detail_with_flankers` checks actual font `cmap` glyph coverage so no missing-glyph box ever appears — and stagger the secondary line entrance by `stagger_sec` (`0.10s`).
-   - **Character Archetype Palette Accents**: Give antagonists, syndicate figures, or authority roles subtle per-card palette accents (`title_color`, `accent_color`) within the film's color family.
-3. **Strict Typographic Hierarchy, Centered-Axis Symmetry & Calibrated Proportions**:
-   - **Title (`title_size`: `6.4 .. 7.4`, `scene_title_size`: `6.2 .. 7.2`) vs Detail (`detail_size`: `3.8 .. 4.5`, `scene_detail_size`: `3.8 .. 4.4`)**: Maintain a `1.6:1` to `1.8:1` size ratio (`resolve_style` enforces `detail_size <= 0.65 * title_size`). Scene/location cards are sized boldly on par with character cards so they never look tiny in wide establishing shots.
-   - **Normalized Font Metrics (`1.20 * upm`)**: `ensure_capcut_font()` automatically normalizes `hhea` and `OS/2` vertical metrics (`ascent = 0.95 * upm`, `descent = -0.25 * upm`) on every extracted or downloaded `.ttf` so CapCut never shrinks fonts with large ornament boxes (like `HoeflerText-Black` or `CormorantGaramond`) relative to the detail font.
-   - **Centered-Axis Symmetry (`align = "center"`, `outer_edge = 0.88`)**: Locks `x_title == x_detail` on the exact same vertical center axis while anchoring the outer edge of the card block at `±0.88`, guaranteeing 100% sub-pixel symmetry in CapCut even when a short name (`Tamarack`) sits above a long role line (`«  $5M Champion · Thoroughbred Stallion  »`).
-   - **Trim/Cut-Immune Timing**: `inspect` unwraps split/trimmed Compound Clips with exact `source_timerange` clipping, projects `sf-board.json` shot breakdowns (`goc`) onto surviving timeline segments (`TL x-ys` vs `TRIMMED_OUT`), and `apply` locks both `start_s` (`>= shot_lo + 0.15s`) and `end_s` (`<= shot_hi - 0.08s`) inside a single continuous `scdet` camera sub-shot.
-   - **Subtle Cinema Legibility**: Use soft optical drop shadows (`shadow_alpha = 0.90..0.95`, `shadow_smoothing = 0.35..0.45`) with a micro-hairline stroke (`stroke_width = 0.012..0.022`, or `0.0` for pure shadow). Never use thick cartoon borders (`>= 0.04`).
-4. **Mandatory WYSIWYG Visual Verification (`preview_sheet`)**:
-   - `cards.py apply` automatically renders every applied card onto its actual midpoint video frame at calibrated CapCut pixel scale and saves a contact sheet (`preview_<plan>.jpg`).
-   - Always view `preview_<plan>.jpg` with `read_file` immediately after `apply` to confirm contrast, negative space, and hierarchy before finishing.
+1. **Strict 10–20 Minute End-to-End Time Budget & Anti-Timeout Context Guardrails (Never > 20 Mins, Never Hang)**:
+   - Every CLI command (`inspect`, `probe`, `apply`) runs in parallel (`ThreadPoolExecutor`, `< 5s` per command) and prints a **compact summary** (`< 30 lines`) to stdout so `run_command` (`WaitMsBeforeAsync: 10000`) **never** times out into a background task.
+   - **Prevent `stream idle timeout (5m0s)` Context Bloat**:
+     - **NEVER** load individual `sheet_01..NN.jpg` files — only open the `4x6` (`24`-frame) `batch_sheets` (`probe_batch_01.jpg`, `probe_batch_02.jpg`, ~140KB each) and paginated `preview_pages` (`preview_*_p1.jpg`, `p2.jpg`, `p3.jpg`, ~160KB each), keeping total images loaded across the entire session `<= 6`.
+     - **NEVER** dump all 600+ subtitles to stdout or write 600+ `cue_overrides` into `plan.json` — `style_subtitle_track_in_place()` automatically normalizes all cues against the screenplay (`sf-board.json` / `*KICHBAN*.txt`, `normalize_with_screenplay: true`), applies `sentence_case: true` + regex `word_replacements`, and defaults (when the user does not request a custom subtitle style) to the classic **Warm Cinema Yellow Boxless** preset (`Seravek-Medium`, `size: 4.2`, `text_size: 30`, `#E5CE6E`, `y: -0.78`, `stroke_width: 0.028`, `shadow_alpha: 0.82`, `shadow_smoothing: 2.58`, `shadow_distance: 1.8`, `check_flag: 47`). If the user explicitly requests a custom subtitle style, match the user's request.
+     - If `subtitle_cue_count == 0` (`subtitle_status: "none_in_draft_do_not_search_other_files"`), **do not** search `mini_draft.json`, `patch.json`, or other projects — simply apply all cards first.
+2. **Mandatory Visual Differentiation Across Movies (Zero Test Cloning)**:
+   - `cards.py inspect` automatically synthesizes a screenplay-matched `"recommended_style"` across 8 cinema archetypes (`coastal_lifeguard_rescue`, `equestrian_heritage_estate`, `legal_corporate_dynasty`, `military_tactical_thriller`, `high_society_gala_drama`, `rustic_heartland_americana`, `modern_prestige_drama`, etc.) and `cards.py apply` enforces an anti-clone guard so no non-equestrian film can ever reuse the Horse test template (`PlayfairDisplay-Bold` + `CormorantGaramond-BoldItalic` + `#F3CA6E`).
+   - Every film MUST have its own distinct visual identity across **4 orthogonal design axes**:
+     - **Axis 1 — Genre Font Pairing**: Pick a screenplay-specific pair (`Fraunces-Bold` + `SpaceGrotesk-SemiBold` for smokehouse/heartland/courtroom drama; `BodoniModa-Bold` + `CormorantGaramond-SemiBoldItalic` for luxury/dynasty; `BebasNeue-Regular` + `JetBrainsMono-SemiBold` for military/tactical; `LibreBaskerville-Bold` + `CourierPrime-Bold` for investigative/archive; `InstrumentSerif-Regular` + `PlusJakartaSans-SemiBold` for prestige indie; `PlayfairDisplay-Bold` + `InstrumentSerif-Italic` for Southern estate).
+     - **Axis 2 — Case & Tracking (`detail_uppercase`, `detail_letter_spacing`)**: Alternate between tracked uppercase sans/mono kickers (`"detail_uppercase": true, "detail_letter_spacing": 0.05, "detail_size": 3.5`) and mixed-case calligraphic italics (`"detail_uppercase": false, "detail_size": 4.2`).
+     - **Axis 3 — Block Alignment (`"align": "outer"` vs `"center"`)**: Use `"align": "outer"` for crisp documentary/A24 lower-thirds (left cards flush-align to `-0.88`, right cards flush-align to `+0.88`) or `"align": "center"` for classical centered-axis symmetry.
+     - **Axis 4 — Flankers & World Palette**: Vary flankers (`""` + `"[ ]"`, `"//"` + `"[ ]"`, `"—"` + `"·"`, or `"« »"`) and primary palette (Ember-Copper `#F6A84E` + Terracotta `#E57C44`, Tactical Ice `#C8E0F4`, Antique Brass `#E5C478`, etc.).
+3. **Automatic Negative-Space Solver & Glare Avoidance (`< 4.5s` Parallel `apply`)**:
+   - `apply` extracts midpoint frames in parallel (`ThreadPoolExecutor`, cached in `/tmp/_capcut_frame_cache`) and runs `score_frame_negative_space()` across all 4 corners (`lower-left`, `lower-right`, `upper-left`, `upper-right`).
+   - Supports `"anchor": "auto"` and automatic bright-signage/glare avoidance (`auto_avoid_glare=True` by default: if a lower corner sits over a white sign, white shirt, or glare `p90 >= 202` / `bright_ratio >= 0.24`, it automatically flips to the darker opposite corner).
+   - Pass `--no-preview` when only updating subtitles or tweaking text for instant (`< 0.8s`) execution.
 
-## Workflow (4 Steps)
+## Workflow (4 Steps — Complete End-to-End in <= 10–20 Minutes)
 
-### Step 1: Inspect Timeline & Available Fonts (`< 0.5s`)
+### Step 1: Inspect Timeline & Screenplay Ground Truth (`< 0.5s`)
 ```bash
 python3 "/Users/daho100/Documents/SF Board/.agents/skills/capcut-cinematic-cards/scripts/cards.py" inspect "<project_name_or_path>" --out /tmp/inspect.json
-python3 "/Users/daho100/Documents/SF Board/.agents/skills/capcut-cinematic-cards/scripts/cards.py" fonts
 ```
 
-### Step 2: Probe Candidate Windows for Internal Shot Cuts (`scdet`) & Negative Space (`< 3s`)
+### Step 2: Probe Candidate Windows & View Batched Sheets (`< 4s`)
 ```bash
-python3 "/Users/daho100/Documents/SF Board/.agents/skills/capcut-cinematic-cards/scripts/cards.py" probe "<project_name_or_path>" \
-  --windows "0-35,165-190,347-370,1633-1663" \
-  --out /tmp/probe_out
+python3 "/Users/daho100/Documents/SF Board/.agents/skills/capcut-cinematic-cards/scripts/cards.py" probe "<project_name_or_path>" --windows "<recommended_probe_windows>" --out /tmp/probe_out
 ```
-- View the generated contact sheets (`sheet_*.jpg`) with `read_file` to pick exact sub-shot `[start_s, end_s]` intervals (`2.5s–4.2s`) and dark/uncluttered negative-space anchors (`lower-left`, `lower-right`, `upper-left`, `upper-right`, `lower-center`).
+- View the generated `batch_sheets` (`probe_batch_01.jpg`, `probe_batch_02.jpg`, ...) with `read_file` in batch to verify faces, camera cuts, and negative-space anchors.
 
-### Step 3: Author Bespoke `plan.json` & Apply (`< 2s`)
+### Step 3: Author Bespoke `plan.json` & Apply (`< 4.5s` with preview, `< 0.8s` with `--no-preview`)
 ```bash
-python3 "/Users/daho100/Documents/SF Board/.agents/skills/capcut-cinematic-cards/scripts/cards.py" apply "<project_name_or_path>" --plan /tmp/plan.json
+python3 "/Users/daho100/Documents/SF Board/.agents/skills/capcut-cinematic-cards/scripts/cards.py" apply "<project_name_or_path>" --plan /tmp/plan.json --preview /tmp/preview.jpg
 ```
 
-### Step 4: Inspect `preview_sheet` with `read_file`
-- Open the `preview_sheet` path returned by `apply` using `read_file`. If any card sits over a bright glare or a background face, flip its `anchor` (`upper-right` <-> `lower-right` / `lower-left`) and re-run `apply`.
+### Step 4: Verify Paginated `preview_pages` (`preview_*_p1.jpg`, ...) with `read_file`
+- Inspect the generated `preview_pages` (`16` cards per `4x4` sheet) with `read_file`, adjust any card if needed, and re-run `apply`.
 
 ## Reference Guides
 - **[references/editing.md](references/editing.md)** — AI art direction guidelines, shot selection, and negative-space composition.
