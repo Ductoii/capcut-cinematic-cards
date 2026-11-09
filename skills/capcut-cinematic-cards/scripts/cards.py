@@ -1288,24 +1288,28 @@ def extract_screenplay_ground_truth(
             if cid:
                 raw_goc = sh.get("goc", "")
                 mapped_goc = _map_shot_breakdown_to_timeline(raw_goc, clip_segs.get(cid, []))
-                kept_slices = [
-                    {
-                        "timeline_s": [s.timeline_start_s, s.timeline_end_s],
-                        "source_s": [s.source_start_s, round(s.source_start_s + s.source_dur_s, 2)],
-                        "dur_s": s.timeline_dur_s,
-                    }
+                # Strip repetitive Seedance boilerplate prefix while preserving all shot breakdown details
+                clean_goc = re.sub(
+                    r"^Scene\s+\d+\s*:.*?widescreen\s+16:9\s+frame\.?\s*",
+                    "",
+                    mapped_goc.strip(),
+                    flags=re.I | re.S,
+                )
+                clean_goc = " | ".join(line.strip() for line in clean_goc.splitlines() if line.strip())
+                kept_slices_str = ", ".join(
+                    f"TL {s.timeline_start_s:.2f}-{s.timeline_end_s:.2f}s (src {s.source_start_s:.1f}-{s.source_start_s + s.source_dur_s:.1f}s)"
                     for s in clip_segs.get(cid, [])
-                ]
+                )
                 clip_info[cid] = {
                     "scene_id": sid,
                     "scene_name": sname,
                     "sf": sh.get("sf", ""),
                     "prompt": sh.get("prompt", ""),
                     "raw_goc": raw_goc,
-                    "notes": sh.get("notes", ""),
-                    "dialogue": sh.get("text", ""),
-                    "shot_breakdown": mapped_goc,
-                    "kept_segments": kept_slices,
+                    "notes": " ".join((sh.get("notes") or "").split()),
+                    "dialogue": " ".join((sh.get("text") or "").split()),
+                    "shot_breakdown": clean_goc,
+                    "kept_segments": kept_slices_str,
                 }
         if sc_clips:
             first_c = sc_clips[0]
@@ -1313,19 +1317,17 @@ def extract_screenplay_ground_truth(
             s_start = clip_ranges[first_c][0]
             s_end = clip_ranges[last_c][1]
             fc_lo, fc_hi = clip_ranges[first_c]
-            sug_title, sug_detail = _clean_scene_title_and_detail(
-                sname, clip_info.get(first_c, {}).get("prompt", ""), len(story_scenes) + 1
-            )
+            fc_info = clip_info.get(first_c, {})
             story_scenes.append(
                 {
                     "scene_id": sid,
                     "scene_name": sname,
-                    "suggested_title": sug_title,
-                    "suggested_detail": sug_detail,
                     "start_s": s_start,
                     "end_s": s_end,
                     "first_clip": first_c,
                     "first_clip_window_s": f"{fc_lo:.2f}-{fc_hi:.2f}s",
+                    "first_clip_kept_segments": fc_info.get("kept_segments", ""),
+                    "first_clip_shots": fc_info.get("shot_breakdown", ""),
                 }
             )
             w_lo = int(max(0.0, s_start))
@@ -1362,14 +1364,11 @@ def extract_screenplay_ground_truth(
         lbl_str = ref.get("label") or ""
         desc_str = (ref.get("desc") or "").splitlines()[0]
         full_label = f"{lbl_str} — {desc_str}".strip(" —") if (lbl_str or desc_str) else rid
-        sug_c_title, sug_c_detail = _clean_char_title_and_detail(lbl_str or rid, desc_str)
         entry = char_groups.setdefault(
             base_id,
             {
                 "id": base_id,
                 "label": full_label,
-                "suggested_title": sug_c_title,
-                "suggested_detail": sug_c_detail,
                 "clips": [],
             },
         )
@@ -1389,9 +1388,11 @@ def extract_screenplay_ground_truth(
             first_clips.append(
                 {
                     "clip": c,
-                    "start_s": c_lo,
-                    "end_s": c_hi,
-                    "dialogue": (ci.get("dialogue") or "")[:120],
+                    "window_s": f"{c_lo:.2f}-{c_hi:.2f}s",
+                    "kept_segments": ci.get("kept_segments", ""),
+                    "notes": ci.get("notes", ""),
+                    "dialogue": ci.get("dialogue", ""),
+                    "shot_breakdown": ci.get("shot_breakdown", ""),
                 }
             )
             if idx_c_clip == 0:
@@ -1399,9 +1400,7 @@ def extract_screenplay_ground_truth(
         char_appearances.append(
             {
                 "character_id": base_id,
-                "label": info["label"][:110],
-                "suggested_title": info["suggested_title"],
-                "suggested_detail": info["suggested_detail"],
+                "label": info["label"],
                 "first_appearance_s": clip_ranges[clips_sorted[0]][0],
                 "first_clips": first_clips,
             }
@@ -1806,15 +1805,34 @@ def build_screenplay_subtitle_context(
     valid_lower_vocab: set[str] = set()
     phrase_candidates: set[str] = set()
 
+    hyphenated_compounds: set[tuple[str, str]] = set()
+
     def _harvest_dialogue_or_notes(txt: str) -> None:
         if not txt:
             return
-        for w in re.findall(r"[A-Za-z][A-Za-z0-9'-]*", txt):
+        words_seq = re.findall(r"[A-Za-z][A-Za-z0-9'-]*", txt)
+        for idx_w, w in enumerate(words_seq):
             wl = w.lower()
             valid_lower_vocab.add(wl)
+            if "'" in wl:
+                valid_lower_vocab.add(wl.split("'")[0])
+            if "-" in wl:
+                for hp in wl.split("-"):
+                    if hp:
+                        valid_lower_vocab.add(hp)
+                valid_lower_vocab.add(wl.replace("-", ""))
             if w.islower():
                 lowercase_seen.add(wl)
                 lowercase_seen.add(wl.rstrip("s"))
+            if idx_w + 1 < len(words_seq):
+                w_next_l = words_seq[idx_w + 1].lower()
+                if len(wl) >= 3 and len(w_next_l) >= 3 and "'" not in wl and "'" not in w_next_l:
+                    valid_lower_vocab.add(wl + w_next_l)
+        # Harvest hyphenated compounds (e.g. Hand-welded, Mid-cook, hand-built, turn-ins, Hand-fired)
+        for m_hyp in re.finditer(r"\b([A-Za-z]{2,})-([A-Za-z]{2,})\b", txt):
+            hw1, hw2 = m_hyp.group(1), m_hyp.group(2)
+            if not _VI_DIACRITIC_RE.search(hw1 + hw2):
+                hyphenated_compounds.add((hw1.lower(), hw2.lower()))
         # Harvest mid-sentence TitleCase words (preceded by a lowercase word and space)
         for m_mid in re.finditer(r"(?<=[a-z]\s)([A-Z][a-z]{2,})\b", txt):
             w = m_mid.group(1)
@@ -1913,6 +1931,15 @@ def build_screenplay_subtitle_context(
                     (re.compile(rf"\b{re.escape(w1)}\s+{prefix3}[a-z]+\b", re.I), phr)
                 )
 
+    for hw1, hw2 in sorted(hyphenated_compounds):
+        canonical_phrases.append(
+            (re.compile(rf"\b{re.escape(hw1)}[\s-]+(?:to\s+)?{re.escape(hw2)}(?:\s+to(?=\s+[A-Za-z]))?\b", re.I), f"{hw1}-{hw2}")
+        )
+        if (hw1, hw2) == ("eighty", "five"):
+            canonical_phrases.append(
+                (re.compile(r"\b(?:user\s+)?85\b", re.I), "Eighty-five")
+            )
+
     rec_style = recommend_style_for_screenplay(sb, str(sf_board_path.parent.name))
     return {
         "shot_windows": shot_windows,
@@ -1923,138 +1950,55 @@ def build_screenplay_subtitle_context(
     }
 
 
-def build_auto_starter_plan(
-    video_segs: list[VideoSegment],
-    story_scenes: list[dict[str, Any]],
-    char_appearances: list[dict[str, Any]],
-    rec_style: dict[str, Any],
-    duration_sec: float,
-    has_subtitles: bool,
-) -> dict[str, Any]:
+def extract_subtitle_review_candidates(
+    subs: list[dict[str, Any]],
+    sp_ctx: dict[str, Any],
+) -> list[dict[str, Any]]:
     """
-    Build a complete, sub-shot-locked starter `plan.json` directly from the screenplay ground truth
-    and `extract_fast_timeline_cuts()` so the AI agent never has to manually construct 40-50 cards
-    from scratch.
+    Run automatic screenplay-grounded normalization across all subtitle cues and return ONLY
+    the cues that still contain any out-of-screenplay vocabulary word paired with the overlapping
+    screenplay shot dialogue (`sh["text"]`), so the AI can audit 100% of remaining ASR anomalies
+    in < 20 lines without reading 600+ already-clean cues.
     """
-    fast_cuts = extract_fast_timeline_cuts(video_segs)
+    if not subs or not sp_ctx or not sp_ctx.get("valid_lower_vocab"):
+        return []
+    from native_text import _normalize_cue_with_screenplay, _apply_sentence_case_and_tokens
 
-    def _sub_shots_in(lo_s: float, hi_s: float) -> list[tuple[float, float]]:
-        bnds = [lo_s] + [c for c in fast_cuts if lo_s + 0.25 < c < hi_s - 0.25] + [hi_s]
-        out = [(round(bnds[i], 2), round(bnds[i + 1], 2)) for i in range(len(bnds) - 1) if bnds[i + 1] - bnds[i] >= 1.8]
-        return out or [(round(lo_s, 2), round(hi_s, 2))]
+    valid_vocab = sp_ctx["valid_lower_vocab"]
+    shot_windows = sp_ctx.get("shot_windows") or []
+    review_cands: list[dict[str, Any]] = []
 
-    starter_cards: list[dict[str, Any]] = []
-    occupied_windows: list[tuple[float, float]] = []
-
-    # 1. Scene / Location Cards
-    for idx_sc, sc in enumerate(story_scenes, start=1):
-        fc_win_raw = sc.get("first_clip_window_s")
-        if isinstance(fc_win_raw, str) and "-" in fc_win_raw:
-            a_s, b_s = fc_win_raw.rstrip("s").split("-", 1)
-            fc_win = [float(a_s), float(b_s)]
-        elif isinstance(fc_win_raw, (list, tuple)) and len(fc_win_raw) == 2:
-            fc_win = [float(fc_win_raw[0]), float(fc_win_raw[1])]
-        else:
-            fc_win = [float(sc.get("start_s", 0.0)), float(sc.get("start_s", 0.0)) + 5.0]
-        subs_sc = _sub_shots_in(fc_win[0], fc_win[1])
-        slo, shi = subs_sc[0]
-        c_start = round(slo + 0.15, 2)
-        c_end = round(min(shi - 0.10, c_start + 3.60), 2)
-        if c_end - c_start < 1.8:
-            c_end = round(min(float(fc_win[1]), c_start + 3.20), 2)
-        title = sc.get("suggested_title") or _clean_scene_title_and_detail(sc.get("scene_name", ""), "", idx_sc)[0]
-        detail = sc.get("suggested_detail") or _clean_scene_title_and_detail(sc.get("scene_name", ""), "", idx_sc)[1]
-        starter_cards.append(
-            {
-                "kind": "scene",
-                "scene_id": sc.get("scene_id", f"S{idx_sc:02d}"),
-                "start": c_start,
-                "end": c_end,
-                "title": title,
-                "detail": detail,
-                "anchor": "auto",
-            }
-        )
-        occupied_windows.append((c_start, c_end))
-
-    # 2. Character Introduction Cards (placed on first non-colliding sub-shot or second sub-shot)
-    for ch in char_appearances:
-        f_clips = ch.get("first_clips") or []
-        if not f_clips:
-            continue
-        cand_shots: list[tuple[float, float]] = []
-        for fc in f_clips:
-            cand_shots.extend(_sub_shots_in(float(fc["start_s"]), float(fc["end_s"])))
-        chosen_shot = cand_shots[0]
-        for slo, shi in cand_shots:
-            s_try = round(slo + 0.15, 2)
-            e_try = round(min(shi - 0.10, s_try + 3.60), 2)
-            if not any(not (e_try <= o_lo + 0.2 or s_try >= o_hi - 0.2) for o_lo, o_hi in occupied_windows):
-                chosen_shot = (slo, shi)
-                break
-        slo, shi = chosen_shot
-        c_start = round(slo + 0.15, 2)
-        c_end = round(min(shi - 0.10, c_start + 3.60), 2)
-        if c_end - c_start < 1.8:
-            c_end = round(c_start + 3.20, 2)
-        starter_cards.append(
-            {
-                "kind": "char",
-                "character_id": ch.get("character_id", ""),
-                "start": c_start,
-                "end": c_end,
-                "title": ch.get("suggested_title") or ch.get("label", "Character"),
-                "detail": ch.get("suggested_detail") or "Featured Character",
-                "anchor": "auto",
-            }
-        )
-        occupied_windows.append((c_start, c_end))
-
-    # 3. THE END Card
-    if duration_sec > 15.0:
-        end_start = round(max(0.0, duration_sec - 5.20), 2)
-        last_sc_title = starter_cards[-1]["title"] if starter_cards else "Final Chapter"
-        for sc_c in reversed(starter_cards):
-            if sc_c.get("kind") == "scene":
-                last_sc_title = sc_c["title"]
-                break
-        starter_cards.append(
-            {
-                "kind": "end",
-                "start": end_start,
-                "end": round(duration_sec, 2),
-                "title": "THE END",
-                "detail": last_sc_title,
-                "anchor": "lower-center",
-                "hold_to_end": True,
-            }
-        )
-
-    starter_cards.sort(key=lambda c: (float(c["start"]), 0 if c["kind"] == "scene" else 1))
-    return {
-        "style": dict(rec_style) if rec_style else {},
-        "cards": starter_cards,
-        "subtitles": {
-            "style_in_place": bool(has_subtitles),
-            "normalize_with_screenplay": True,
-            "sentence_case": True,
-            "font": "Seravek-Medium",
-            "size": 4.2,
-            "text_size": 30,
-            "color": "#E5CE6E",
-            "y": -0.78,
-            "stroke_color": "#0A0C0E",
-            "stroke_width": 0.028,
-            "stroke_alpha": 0.95,
-            "shadow_color": "#050608",
-            "shadow_alpha": 0.82,
-            "shadow_smoothing": 2.58,
-            "shadow_distance": 1.8,
-            "shadow_diffuse": 0.1435,
-            "word_replacements": {},
-            "cue_overrides": {},
-        },
-    }
+    for c in subs:
+        st_s = float(c.get("start_s", 0.0))
+        en_s = float(c.get("end_s", st_s + 2.0))
+        norm = _normalize_cue_with_screenplay(str(c.get("text") or ""), st_s, en_s, sp_ctx)
+        norm = _apply_sentence_case_and_tokens(norm)
+        words = re.findall(r"[A-Za-z][A-Za-z'-]*", norm)
+        unknown = [
+            w
+            for w in words
+            if w.lower() not in valid_vocab
+            and w.lower().rstrip("s") not in valid_vocab
+            and w.lower() not in _STOP_PROPER_NOUNS
+            and len(w) >= 3
+        ]
+        if unknown:
+            mid_s = 0.5 * (st_s + en_s)
+            dlgs = [
+                " ".join(d.split())
+                for lo, hi, d in shot_windows
+                if lo - 1.0 <= mid_s <= hi + 1.0 and d
+            ]
+            review_cands.append(
+                {
+                    "cue_index": c.get("index"),
+                    "time_s": f"{st_s:.2f}-{en_s:.2f}s",
+                    "subtitle_after_auto": norm,
+                    "unmatched_words": unknown,
+                    "screenplay_dialogue": " | ".join(dlgs[:2])[:220],
+                }
+            )
+    return review_cands
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -2069,8 +2013,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         cards = f_cards.result()
         f_scenes = pool.submit(group_scene_boundaries, video_segs)
         f_gt = pool.submit(extract_screenplay_ground_truth, video_segs, subs)
+        f_sp_ctx = pool.submit(build_screenplay_subtitle_context, video_segs, subs)
         scenes = f_scenes.result()
         gt = f_gt.result()
+        sp_ctx = f_sp_ctx.result()
 
     sub_status = (
         "ready"
@@ -2085,16 +2031,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     story_scenes = gt.get("story_scenes") or scenes
     char_appearances = gt.get("character_appearances", [])
     rec_style = gt.get("recommended_style", {})
-
-    starter_plan_path = Path(f"/tmp/starter_plan_{project_dir.name}.json")
-    default_plan_path = Path(f"/tmp/plan_{project_dir.name}.json")
-    starter_plan = build_auto_starter_plan(
-        video_segs, story_scenes, char_appearances, rec_style, duration_sec, bool(subs)
-    )
-    with starter_plan_path.open("w", encoding="utf-8") as pfh:
-        json.dump(starter_plan, pfh, ensure_ascii=False, indent=2)
-    if not default_plan_path.exists():
-        shutil.copyfile(str(starter_plan_path), str(default_plan_path))
+    sub_review_cands = extract_subtitle_review_candidates(subs, sp_ctx) if subs else []
 
     payload: dict[str, Any] = {
         "project": project_dir.name,
@@ -2103,14 +2040,14 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         "video_segment_count": len(video_segs),
         "scene_count": len(story_scenes),
         "character_count": len(char_appearances),
-        "starter_plan_path": str(starter_plan_path),
-        "starter_card_count": len(starter_plan["cards"]),
         "recommended_style": rec_style,
         "recommended_probe_windows": gt.get("recommended_probe_windows", ""),
         "screenplay_source": gt.get("screenplay_source"),
         "existing_card_segment_count": len(cards),
         "subtitle_cue_count": len(subs),
         "subtitle_status": sub_status,
+        "subtitle_review_candidate_count": len(sub_review_cands),
+        "subtitle_review_candidates": sub_review_cands,
         "story_scenes": story_scenes,
         "character_appearances": char_appearances,
     }
@@ -2148,10 +2085,9 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 "screenplay_source": payload.get("screenplay_source"),
                 "recommended_style_archetype": (payload.get("recommended_style") or {}).get("archetype"),
                 "recommended_probe_windows": payload.get("recommended_probe_windows", ""),
-                "starter_plan_path": str(starter_plan_path),
-                "starter_card_count": len(starter_plan["cards"]),
                 "existing_card_segment_count": payload["existing_card_segment_count"],
                 "subtitle_cue_count": payload["subtitle_cue_count"],
+                "subtitle_review_candidate_count": len(sub_review_cands),
                 "subtitle_status": sub_status,
                 "saved_to": str(out_path),
             },

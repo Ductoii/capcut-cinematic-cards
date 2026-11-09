@@ -1585,17 +1585,32 @@ def _normalize_cue_with_screenplay(
         gt_lows = [w.lower() for w in gt_words]
         gt_low_set = set(gt_lows)
 
-        # 1a: Check 2-word ASR bigrams that split a single compound screenplay word (e.g. 'life Lord' -> 'lifeguard', 'Mill bank' -> 'Millbank')
+        # 1a-0: Expand colloquial "'em" -> " them" when "them" is in ground-truth dialogue, and strip trailing ASR "hahaha" noise
+        if "them" in gt_low_set and "'em" in out.lower():
+            out = re.sub(r"\b([A-Za-z]+)'em\b", r"\1 them", out, flags=re.I)
+        if "hahaha" not in gt_low_set and "haha" not in gt_low_set:
+            out = re.sub(r"\s+\b(?:hahaha|haha|hehe)\b\s*$", "", out, flags=re.I)
+
+        # 1a: Check 2-word ASR bigrams that split a single screenplay word (e.g. 'life Lord' -> 'lifeguard', 'Vacate it' -> 'Vacated', 'grant it' -> 'Granted')
         cue_tokens = list(re.finditer(r"[A-Za-z][A-Za-z']*", out))
         for i in range(len(cue_tokens) - 1, 0, -1):
             m1, m2 = cue_tokens[i - 1], cue_tokens[i]
             if out[m1.end() : m2.start()] != " ":
                 continue
             w1, w2 = m1.group(0), m2.group(0)
-            if len(w1) < 3 or len(w2) < 3 or "'" in w1 or "'" in w2:
+            if "'" in w1 or "'" in w2:
                 continue
             w1_l, w2_l = w1.lower(), w2.lower()
             if w1_l in gt_low_set and w2_l in gt_low_set:
+                continue
+            if len(w1) >= 4 and w2_l == "it" and w1_l not in gt_low_set:
+                for cand_ed in (w1_l + "d", w1_l + "ed"):
+                    if cand_ed in gt_low_set:
+                        gw_match = next((gw for gw, gl in zip(gt_words, gt_lows) if gl == cand_ed), cand_ed)
+                        out = out[: m1.start()] + gw_match + out[m2.end() :]
+                        break
+                continue
+            if len(w1) < 3 or len(w2) < 3:
                 continue
             fused_low = w1_l + w2_l
             for gw, gl in zip(gt_words, gt_lows):
@@ -1620,24 +1635,47 @@ def _normalize_cue_with_screenplay(
                     out = out[: m_tok.start()] + proper_nouns[cl] + out[m_tok.end() :]
                 continue
             prev_low = cue_tokens[i - 1].group(0).lower() if i > 0 else ""
+            prev2_low = cue_tokens[i - 2].group(0).lower() if i > 1 else ""
             next_low = cue_tokens[i + 1].group(0).lower() if i + 1 < len(cue_tokens) else ""
             for k, (cand_gt, cand_low) in enumerate(zip(gt_words, gt_lows)):
-                if "'" in cand_low or cand_low == cl or cand_low in cue_low_set or len(cl) < 3 or len(cand_low) < 3:
-                    continue
-                if abs(len(cand_low) - len(cl)) > 2:
-                    continue
-                # Never flip negation prefixes (e.g. illegal <-> legal, unfair <-> fair) or honorifics (Mister <-> Master)
-                if cl in ("illegal", "legal", "unfair", "fair", "mister", "master", "mrs", "miss") or (
-                    cl.endswith(cand_low) or cand_low.endswith(cl)
-                ):
+                if cand_low == cl or cand_low in cue_low_set:
                     continue
                 prev_match = bool(prev_low and k > 0 and gt_lows[k - 1] == prev_low)
+                prev2_match = bool(prev2_low and k > 1 and gt_lows[k - 2] == prev2_low)
                 next_match = bool(next_low and k + 1 < len(gt_lows) and gt_lows[k + 1] == next_low)
                 if not (prev_match or next_match):
                     continue
+                # Possessive/contraction apostrophe restoration (e.g. 'waters' -> "water's", 'pavilions' -> "pavilion's")
+                if "'" in cand_low:
+                    if cand_low.replace("'", "") == cl and (prev_match or next_match):
+                        out = out[: m_tok.start()] + cand_gt.lower() + out[m_tok.end() :]
+                        break
+                    continue
+                if len(cl) < 2 or len(cand_low) < 2 or abs(len(cand_low) - len(cl)) > 2:
+                    continue
+                # Never flip distinct honorifics (Mister <-> Master, Mrs <-> Miss)
+                if cl in ("mister", "master", "mrs", "miss"):
+                    continue
+                # Allow negation prefix correction (e.g. 'illegal' -> 'legal') ONLY when cl is absent from shot dialogue and neighbors match
+                if cl.endswith(cand_low) or cand_low.endswith(cl):
+                    if (prev_match and next_match) or (prev_match and prev2_match):
+                        out = out[: m_tok.start()] + cand_gt + out[m_tok.end() :]
+                        break
+                    continue
+                if len(cl) == 2 or len(cand_low) == 2:
+                    if prev_match and next_match and difflib.SequenceMatcher(None, cl, cand_low).ratio() >= 0.45:
+                        out = out[: m_tok.start()] + cand_gt.lower() + out[m_tok.end() :]
+                        break
+                    continue
                 sim = difflib.SequenceMatcher(None, cl, cand_low).ratio()
                 rhyme = len(cl) >= 4 and len(cand_low) >= 4 and cl[-3:] == cand_low[-3:]
-                if sim >= 0.72 or (prev_match and next_match and sim >= 0.58) or (prev_match and rhyme and sim >= 0.60):
+                bigram_anchor = prev_match and prev2_match and cl[0] == cand_low[0] and abs(len(cl) - len(cand_low)) <= 1
+                if (
+                    sim >= 0.72
+                    or (prev_match and next_match and sim >= 0.58)
+                    or (prev_match and rhyme and sim >= 0.60)
+                    or bigram_anchor
+                ):
                     out = out[: m_tok.start()] + cand_gt + out[m_tok.end() :]
                     break
 
