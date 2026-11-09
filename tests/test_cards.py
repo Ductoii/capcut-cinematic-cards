@@ -205,6 +205,47 @@ class CinematicCardsEngineTest(unittest.TestCase):
         c2 = native_text._apply_sentence_case_and_tokens(c2)
         self.assertEqual(c2, "Under Clause 9 you must vacate this shack with Lenora and Alford")
 
+        sp_ctx_local = {
+            "shot_windows": [
+                (100.0, 110.0, "CLERK: You after stall nine? I'm after the card first."),
+                (120.0, 130.0, "LOOMIS: Entered and occupied. Authority? Lessee of record. Millbank."),
+                (140.0, 150.0, "CLEMENTINE: Mr. Millbank. Where second judges sign. When I set it down in the judges' back room."),
+            ],
+            "proper_nouns": {"millbank": "Millbank"},
+            "valid_lower_vocab": {"you", "after", "stall", "nine", "authority", "lessee", "of", "record", "millbank", "where", "second", "judges", "sign", "when", "set", "down", "back", "room"},
+            "canonical_phrases": [],
+        }
+        self.assertEqual(
+            native_text._apply_sentence_case_and_tokens(
+                native_text._normalize_cue_with_screenplay("You have to stall nine", 102.0, 105.0, sp_ctx_local)
+            ),
+            "You after stall nine",
+        )
+        self.assertEqual(
+            native_text._apply_sentence_case_and_tokens(
+                native_text._normalize_cue_with_screenplay("Authority let's see a record Millbank", 122.0, 126.0, sp_ctx_local)
+            ),
+            "Authority Lessee of record Millbank",
+        )
+        self.assertEqual(
+            native_text._apply_sentence_case_and_tokens(
+                native_text._normalize_cue_with_screenplay("Where second judge is signed", 142.0, 145.0, sp_ctx_local)
+            ),
+            "Where second judges sign",
+        )
+        self.assertEqual(
+            native_text._apply_sentence_case_and_tokens(
+                native_text._normalize_cue_with_screenplay("Master Millbank", 141.0, 143.0, sp_ctx_local)
+            ),
+            "Mr. Millbank",
+        )
+        self.assertEqual(
+            native_text._apply_sentence_case_and_tokens(
+                native_text._normalize_cue_with_screenplay("When I set it down in the judge's back room", 145.0, 148.0, sp_ctx_local)
+            ),
+            "When I set it down in the judges' back room",
+        )
+
         rec = cards.recommend_style_for_screenplay(
             {"scenes": [{"name": "LIFEGUARD TOWER AT CORAL REACH BEACH", "sfs": [{"label": "WES — SENIOR OCEAN LIFEGUARD"}]}]},
             "LIFEGUARD-TEST",

@@ -1956,15 +1956,15 @@ def extract_subtitle_review_candidates(
 ) -> list[dict[str, Any]]:
     """
     Run automatic screenplay-grounded normalization across all subtitle cues and return ONLY
-    the cues that still contain any out-of-screenplay vocabulary word paired with the overlapping
-    screenplay shot dialogue (`sh["text"]`), so the AI can audit 100% of remaining ASR anomalies
-    in < 20 lines without reading 600+ already-clean cues.
+    the cues that still contain any word missing from the overlapping local shot dialogue (`sh["text"]`)
+    or global screenplay vocabulary, so the AI can audit 100% of remaining ASR anomalies in < 20 lines.
     """
     if not subs or not sp_ctx or not sp_ctx.get("valid_lower_vocab"):
         return []
     from native_text import _normalize_cue_with_screenplay, _apply_sentence_case_and_tokens
 
     valid_vocab = sp_ctx["valid_lower_vocab"]
+    proper_nouns = sp_ctx.get("proper_nouns") or {}
     shot_windows = sp_ctx.get("shot_windows") or []
     review_cands: list[dict[str, Any]] = []
 
@@ -1973,29 +1973,45 @@ def extract_subtitle_review_candidates(
         en_s = float(c.get("end_s", st_s + 2.0))
         norm = _normalize_cue_with_screenplay(str(c.get("text") or ""), st_s, en_s, sp_ctx)
         norm = _apply_sentence_case_and_tokens(norm)
-        words = re.findall(r"[A-Za-z][A-Za-z'-]*", norm)
-        unknown = [
-            w
-            for w in words
-            if w.lower() not in valid_vocab
-            and w.lower().rstrip("s") not in valid_vocab
-            and w.lower() not in _STOP_PROPER_NOUNS
-            and len(w) >= 3
+        local_dlgs = [
+            " ".join(d.split())
+            for lo, hi, d in shot_windows
+            if not (hi < st_s - 2.5 or lo > en_s + 2.5) and d
         ]
+        local_vocab: set[str] = set()
+        if local_dlgs:
+            local_seq = re.findall(r"[a-z0-9'-]+", " ".join(local_dlgs).lower())
+            for idx_lw, lw in enumerate(local_seq):
+                local_vocab.add(lw)
+                if "'" in lw:
+                    local_vocab.add(lw.split("'")[0])
+                if "-" in lw:
+                    local_vocab.update(lw.split("-"))
+                    local_vocab.add(lw.replace("-", ""))
+                if idx_lw + 1 < len(local_seq):
+                    local_vocab.add(lw + local_seq[idx_lw + 1])
+
+        words = [m.group(0) for m in re.finditer(r"(?<![0-9'])[A-Za-z][A-Za-z'-]*", norm)]
+        unknown: list[str] = []
+        for w in words:
+            wl = w.lower().rstrip(".")
+            if len(wl) < 3 or wl in ("the", "and", "but", "for", "you", "not", "yes", "yeah", "well"):
+                continue
+            if wl in proper_nouns:
+                continue
+            in_global = wl in valid_vocab or wl.rstrip("s") in valid_vocab
+            in_local = (not local_vocab) or (wl in local_vocab or wl.rstrip("s") in local_vocab)
+            if not in_global or not in_local:
+                unknown.append(w)
+
         if unknown:
-            mid_s = 0.5 * (st_s + en_s)
-            dlgs = [
-                " ".join(d.split())
-                for lo, hi, d in shot_windows
-                if lo - 1.0 <= mid_s <= hi + 1.0 and d
-            ]
             review_cands.append(
                 {
                     "cue_index": c.get("index"),
                     "time_s": f"{st_s:.2f}-{en_s:.2f}s",
                     "subtitle_after_auto": norm,
                     "unmatched_words": unknown,
-                    "screenplay_dialogue": " | ".join(dlgs[:2])[:220],
+                    "screenplay_dialogue": " | ".join(local_dlgs[:2])[:220],
                 }
             )
     return review_cands

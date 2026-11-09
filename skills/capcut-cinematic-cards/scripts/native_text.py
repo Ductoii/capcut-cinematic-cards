@@ -1540,7 +1540,12 @@ def _apply_sentence_case_and_tokens(text: str) -> str:
     if not text:
         return text
     out = re.sub(r"(^\s*[a-z]|(?<=[.!?]\s)[a-z])", lambda m: m.group(1).upper(), text)
-    out = re.sub(r"\b(mr|mrs|ms|dr)\.\s*([a-z])", lambda m: f"{m.group(1).capitalize()}. {m.group(2).upper()}", out, flags=re.IGNORECASE)
+    out = re.sub(
+        r"\b(mr|mrs|ms|dr)\.?\s+([A-Za-z])",
+        lambda m: f"{m.group(1).capitalize()}. {m.group(2).upper()}",
+        out,
+        flags=re.IGNORECASE,
+    )
     out = re.sub(
         r"\b(row|stall|clause|section|article|lot|ring|gate|barn)\s+(\d+)\b",
         lambda m: f"{m.group(1).capitalize()} {m.group(2)}",
@@ -1679,9 +1684,129 @@ def _normalize_cue_with_screenplay(
                     out = out[: m_tok.start()] + cand_gt + out[m_tok.end() :]
                     break
 
+        # 1c: Sliding-Window SequenceMatcher Local Dialogue Span Alignment (fixes common-word ASR mishearings like
+        # "let's see a record" -> "Lessee of record", "You have to stall nine" -> "You after stall nine",
+        # "Hands down two inches" -> "Pan's down two inches", "Where second judge is signed" -> "Where second judges sign",
+        # "Master Millbank" -> "Mr. Millbank", "judge's back room" -> "judges' back room", "Cm" -> "C.M.")
+        clean_local_dlg = re.sub(
+            r"(?:^|\n)\s*[A-Z][A-Z0-9_\s'-]{1,24}:\s*",
+            " ",
+            "\n".join(local_dlg_parts),
+        )
+        for m_pl in re.finditer(r"\b([A-Za-z]{3,}s)'(?!\w)", clean_local_dlg):
+            pl_w = m_pl.group(1)
+            sing_p = pl_w[:-1] + "'s"
+            out = re.sub(rf"\b{re.escape(sing_p)}\b", f"{pl_w}'", out, flags=re.I)
+
+        _num_map = {
+            "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+            "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
+            "10": "ten", "11": "eleven", "12": "twelve", "16": "sixteen",
+            "20": "twenty", "32": "thirty-two", "40": "forty", "41": "forty-one",
+            "42": "forty-two", "84": "eighty-four", "85": "eighty-five",
+            "90": "ninety", "94": "ninety-four", "96": "ninety-six", "100": "hundred",
+        }
+
+        def _norm_align_tok(s: str) -> str:
+            sl = s.lower().strip(".,!?;:\"'").replace(".", "")
+            return _num_map.get(sl, sl)
+
+        tok_pat_1c = re.compile(r"(?:[A-Z]\.){2,}|(?:Mr|Mrs|Ms|Dr)\.|[A-Za-z0-9][A-Za-z0-9'-]*", re.I)
+        gt_toks_1c = list(tok_pat_1c.finditer(clean_local_dlg))
+        gt_words_1c = [m.group(0) for m in gt_toks_1c]
+        gt_lows_1c = [_norm_align_tok(m.group(0)) for m in gt_toks_1c]
+
+        cue_toks_1c = list(tok_pat_1c.finditer(out))
+        cue_lows_1c = [_norm_align_tok(m.group(0)) for m in cue_toks_1c]
+        n_cue_1c = len(cue_lows_1c)
+
+        if n_cue_1c >= 2 and gt_lows_1c:
+            best_score_1c = -1.0
+            best_w_1c = 0
+            best_w_len_1c = n_cue_1c
+            cue_joined_1c = " ".join(cue_lows_1c)
+            for w_len in range(max(2, n_cue_1c - 2), min(len(gt_lows_1c), n_cue_1c + 1) + 1):
+                for w_i in range(max(1, len(gt_lows_1c) - w_len + 1)):
+                    w_sub = gt_lows_1c[w_i : w_i + w_len]
+                    sm_cand = difflib.SequenceMatcher(None, cue_lows_1c, w_sub, autojunk=False)
+                    matches = sum(b.size for b in sm_cand.get_matching_blocks())
+                    if matches == 0 or matches / max(n_cue_1c, w_len) < 0.38:
+                        continue
+                    ops = sm_cand.get_opcodes()
+                    bound_pen = 0.0
+                    if ops and ops[0][0] in ("delete", "insert"):
+                        bound_pen += 0.14
+                    if ops and ops[-1][0] in ("delete", "insert"):
+                        bound_pen += 0.14
+                    char_r = difflib.SequenceMatcher(None, cue_joined_1c, " ".join(w_sub)).ratio()
+                    sc = round((matches / n_cue_1c) + 0.65 * char_r - bound_pen - 0.02 * abs(w_len - n_cue_1c), 4)
+                    if sc > best_score_1c:
+                        best_score_1c = sc
+                        best_w_1c = w_i
+                        best_w_len_1c = w_len
+            if best_score_1c >= 0.90:
+                w_gt_toks = gt_toks_1c[best_w_1c : best_w_1c + best_w_len_1c]
+                w_gt_words = gt_words_1c[best_w_1c : best_w_1c + best_w_len_1c]
+                w_gt_lows = gt_lows_1c[best_w_1c : best_w_1c + best_w_len_1c]
+                sm = difflib.SequenceMatcher(None, cue_lows_1c, w_gt_lows, autojunk=False)
+                for tag, i1, i2, j1, j2 in reversed(sm.get_opcodes()):
+                    if tag == "equal" and (i2 - i1) == (j2 - j1):
+                        for off in range(i2 - i1 - 1, -1, -1):
+                            gw_o = w_gt_words[j1 + off]
+                            cw_o = cue_toks_1c[i1 + off].group(0)
+                            if "." in gw_o and "." not in cw_o:
+                                st_c = cue_toks_1c[i1 + off].start()
+                                en_c = cue_toks_1c[i1 + off].end()
+                                out = out[:st_c] + gw_o + out[en_c:]
+                        continue
+                    if tag != "replace":
+                        continue
+                    if not (1 <= (i2 - i1) <= 3 and 1 <= (j2 - j1) <= 3):
+                        continue
+                    raw_c_tokens = [cue_toks_1c[k].group(0) for k in range(i1, i2)]
+                    if any(any(ch.isdigit() for ch in t) for t in raw_c_tokens):
+                        continue
+                    c_span = cue_lows_1c[i1:i2]
+                    g_span = w_gt_lows[j1:j2]
+                    if c_span == g_span or set(c_span).issubset(set(g_span)) or set(g_span).issubset(set(c_span)):
+                        continue
+                    left_anchor = i1 > 0 and j1 > 0 and cue_lows_1c[i1 - 1] == w_gt_lows[j1 - 1]
+                    right_anchor = i2 < n_cue_1c and j2 < len(w_gt_lows) and cue_lows_1c[i2] == w_gt_lows[j2]
+                    if not (left_anchor or right_anchor):
+                        continue
+                    if not (left_anchor and right_anchor):
+                        if right_anchor and not left_anchor:
+                            between = clean_local_dlg[w_gt_toks[j2 - 1].end() : w_gt_toks[j2].start()]
+                            if re.search(r"[.?!]", between):
+                                continue
+                        if left_anchor and not right_anchor:
+                            between = clean_local_dlg[w_gt_toks[j1 - 1].end() : w_gt_toks[j1].start()]
+                            if re.search(r"[.?!]", between):
+                                continue
+                        span_sim = difflib.SequenceMatcher(None, " ".join(c_span), " ".join(g_span)).ratio()
+                        left_run = i1 >= 2 and j1 >= 2 and cue_lows_1c[i1 - 2 : i1] == w_gt_lows[j1 - 2 : j1]
+                        right_run = (
+                            i2 + 2 <= n_cue_1c
+                            and j2 + 2 <= len(w_gt_lows)
+                            and cue_lows_1c[i2 : i2 + 2] == w_gt_lows[j2 : j2 + 2]
+                        )
+                        honorific_fix = len(c_span) == 1 and len(g_span) == 1 and c_span[0] == "master" and g_span[0] == "mr"
+                        if span_sim < 0.52 and not (
+                            ((left_run or right_run) and len(c_span) == 1 and len(g_span) == 1) or honorific_fix
+                        ):
+                            continue
+                    repl_str = " ".join(w_gt_words[j1:j2])
+                    start_char = cue_toks_1c[i1].start()
+                    end_char = cue_toks_1c[i2 - 1].end()
+                    out = out[:start_char] + repl_str + out[end_char:]
+
     # Step 2: Global screenplay canonical phrases (e.g. 'Clause 9', 'Coral Reach', 'South Door')
     for pat, repl_phrase in canonical_phrases:
         out = pat.sub(repl_phrase, out)
+    if local_dlg_parts:
+        local_low_check = " ".join(local_dlg_parts).lower()
+        if "south door" in local_low_check and "south-door" not in local_low_check:
+            out = re.sub(r"\bsouth-door\b", "south door", out, flags=re.I)
 
     # Step 3: Global screenplay proper-noun restoration & fuzzy typo correction
     def _fix_word(m: re.Match[str]) -> str:
