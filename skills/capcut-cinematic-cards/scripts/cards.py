@@ -1061,6 +1061,150 @@ def _norm_words(txt: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9']+", (txt or "").lower()) if len(w) >= 3}
 
 
+_VI_DIACRITIC_RE = re.compile(r"[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]", re.I)
+
+
+def _strip_vietnamese_clauses(text: str) -> str:
+    """Remove parenthetical or trailing clauses that contain Vietnamese diacritics."""
+    if not text:
+        return ""
+    cleaned = re.sub(
+        r"\([^)]*\)",
+        lambda m: "" if _VI_DIACRITIC_RE.search(m.group(0)) else m.group(0),
+        text,
+    )
+    parts = [p.strip() for p in re.split(r"\s*[—–\-|]\s*", cleaned) if p.strip()]
+    en_parts = [p for p in parts if not _VI_DIACRITIC_RE.search(p)]
+    return " · ".join(en_parts) if en_parts else (parts[0] if parts else "")
+
+
+def _to_editorial_title_case(s: str) -> str:
+    small = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "of", "on", "or", "the", "to", "with"}
+    words = s.split()
+    out: list[str] = []
+    for i, w in enumerate(words):
+        w_clean = w.strip(".,:;()[]")
+        if w_clean.isupper() and len(w_clean) >= 2:
+            tc = w.capitalize()
+            if 0 < i < len(words) - 1 and w_clean.lower() in small:
+                tc = w.lower()
+            out.append(tc)
+        else:
+            out.append(w)
+    return " ".join(out)
+
+
+def _clean_scene_title_and_detail(sname: str, prompt: str = "", idx: int = 1) -> tuple[str, str]:
+    raw = (sname or f"Scene {idx}").strip()
+    raw = re.sub(r"^(?:SCENE|SC|S)\s*\d+\s*[:.\-—–]?\s*", "", raw, flags=re.I)
+    ie_match = re.search(r"\b(INT\./EXT\.|EXT\./INT\.|INT\.|EXT\.)\s*", raw, flags=re.I)
+    is_ext = bool(ie_match and "EXT" in ie_match.group(1).upper())
+    raw = re.sub(r"\b(?:INT\./EXT\.|EXT\./INT\.|INT\.|EXT\.)\s*", "", raw, flags=re.I)
+
+    tod = ""
+    for m_par in re.finditer(r"\(([^)]+)\)", raw):
+        inner = m_par.group(1).strip()
+        if not _VI_DIACRITIC_RE.search(inner):
+            tod = _to_editorial_title_case(inner)
+    raw = re.sub(r"\([^)]*\)", "", raw).strip()
+    cleaned = _strip_vietnamese_clauses(raw)
+    title = _to_editorial_title_case(cleaned) if cleaned else f"Scene {idx}"
+    # Truncate overly long multi-part scene titles to 2 clauses max
+    clauses = [c.strip() for c in title.split("·") if c.strip()]
+    if len(clauses) > 2:
+        title = f"{clauses[0]} · {clauses[1]}"
+    if len(title) > 38 and "·" in title:
+        title = title.split("·")[0].strip()
+
+    if not tod:
+        pl = (prompt or "").lower()
+        if "night" in pl or "moonlight" in pl:
+            tod = "Night"
+        elif "morning" in pl or "dawn" in pl or "sunrise" in pl:
+            tod = "Morning Light"
+        elif "golden hour" in pl or "dusk" in pl or "sunset" in pl or "evening" in pl:
+            tod = "Late Afternoon"
+        else:
+            tod = "Daylight"
+    setting_kind = clauses[1] if len(clauses) > 1 and clauses[1] not in title else ("Exterior Grounds" if is_ext else "Interior")
+    detail = f"{tod} · {setting_kind}" if setting_kind and setting_kind.lower() != tod.lower() else tod
+    return title, detail
+
+
+def _clean_char_title_and_detail(label: str, desc: str = "") -> tuple[str, str]:
+    raw_lbl = (label or "").strip()
+    age_str = ""
+    m_age = re.search(r"\((\d{1,2})\)|\b(\d{1,2})\s*(?:yo|years?\s*old|tuổi)\b", raw_lbl + " " + (desc or ""), re.I)
+    if m_age:
+        age_str = m_age.group(1) or m_age.group(2)
+
+    parts = [p.strip() for p in re.split(r"\s*[—–\-]\s*", raw_lbl) if p.strip()]
+    name_part = re.sub(r"\([^)]*\)", "", parts[0] if parts else raw_lbl).strip()
+    name_part = re.sub(r"^(?:CHAR|AL)\d+[A-Za-z]*\s*[:.]?\s*", "", name_part, flags=re.I).strip()
+    name_tc = _to_editorial_title_case(name_part)
+    title = f"{name_tc}, {age_str}" if (age_str and age_str not in name_tc) else name_tc
+
+    role_candidates = [p for p in parts[1:] if not _VI_DIACRITIC_RE.search(p)]
+    role = _to_editorial_title_case(" · ".join(role_candidates[:2])) if role_candidates else ""
+    if not role and desc:
+        first_line = desc.splitlines()[0]
+        if not _VI_DIACRITIC_RE.search(first_line):
+            role = _to_editorial_title_case(first_line[:42].strip(" ,.;—-"))
+    if not role:
+        role = "Featured Character"
+    return title, role
+
+
+def _locate_sf_board_path(
+    video_segs: list[VideoSegment],
+    subs: list[dict[str, Any]] | None = None,
+) -> Path | None:
+    for seg in video_segs:
+        if not seg.path:
+            continue
+        p = Path(seg.path)
+        for parent in (p.parent, p.parent.parent, p.parent.parent.parent):
+            cand = parent / "sf-board.json"
+            if cand.exists():
+                return cand
+
+    if subs:
+        sub_blob = " ".join(c.get("text", "") for c in subs[:40]).lower()
+        sub_words = _norm_words(sub_blob)
+        if sub_words:
+            search_roots: list[Path] = []
+            for r_cand in (
+                Path.cwd(),
+                Path(__file__).resolve().parents[4],
+                Path.home() / "Documents" / "SF Board",
+                Path.home() / "Documents",
+                Path.home() / "Desktop",
+            ):
+                if r_cand.exists() and r_cand not in search_roots:
+                    search_roots.append(r_cand)
+            cands: list[Path] = []
+            for sr in search_roots:
+                if (sr / "sf-board.json").exists():
+                    cands.append(sr / "sf-board.json")
+                cands.extend(sr.glob("*.project/sf-board.json"))
+            if cands:
+                min_hits = max(6, int(len(sub_words) * 0.35))
+
+                def _score_cand(cand: Path) -> tuple[int, Path]:
+                    try:
+                        raw = cand.read_text(encoding="utf-8")[:60000].lower()
+                        return sum(1 for w in sub_words if w in raw), cand
+                    except Exception:
+                        return 0, cand
+
+                with ThreadPoolExecutor(max_workers=min(DEFAULT_MAX_WORKERS, len(cands))) as pool:
+                    scored = list(pool.map(_score_cand, cands))
+                best_score, best_cand = max(scored, key=lambda x: x[0])
+                if best_score >= min_hits:
+                    return best_cand
+    return None
+
+
 def extract_screenplay_ground_truth(
     video_segs: list[VideoSegment],
     subs: list[dict[str, Any]] | None = None,
@@ -1071,42 +1215,7 @@ def extract_screenplay_ground_truth(
     story scenes (`S01..SNN`) and character appearances (`CHAR1..CHARN`, `AL1..ALN`) to exact edited
     CapCut timeline timestamps, accounting for trimmed/split segments (`source_timerange`).
     """
-    sf_board_path: Path | None = None
-    for seg in video_segs:
-        if not seg.path:
-            continue
-        p = Path(seg.path)
-        for parent in (p.parent, p.parent.parent):
-            cand = parent / "sf-board.json"
-            if cand.exists():
-                sf_board_path = cand
-                break
-        if sf_board_path:
-            break
-
-    # Fallback when video is a flat exported MP4 without V-NNN filenames: match subtitle lines against workspace sf-board.json in parallel
-    if not sf_board_path and subs:
-        sub_blob = " ".join(c.get("text", "") for c in subs[:40]).lower()
-        sub_words = _norm_words(sub_blob)
-        ws_root = Path("/Users/daho100/Documents/SF Board")
-        if ws_root.exists() and sub_words:
-            cands = list(ws_root.glob("*.project/sf-board.json"))
-            min_hits = max(6, int(len(sub_words) * 0.35))
-
-            def _score_cand(cand: Path) -> tuple[int, Path]:
-                try:
-                    raw = cand.read_text(encoding="utf-8")[:60000].lower()
-                    return sum(1 for w in sub_words if w in raw), cand
-                except Exception:
-                    return 0, cand
-
-            if cands:
-                with ThreadPoolExecutor(max_workers=min(DEFAULT_MAX_WORKERS, len(cands))) as pool:
-                    scored = list(pool.map(_score_cand, cands))
-                best_score, best_cand = max(scored, key=lambda x: x[0])
-                if best_score >= min_hits:
-                    sf_board_path = best_cand
-
+    sf_board_path = _locate_sf_board_path(video_segs, subs)
     if not sf_board_path:
         return {}
 
@@ -1203,16 +1312,20 @@ def extract_screenplay_ground_truth(
             last_c = sc_clips[-1]
             s_start = clip_ranges[first_c][0]
             s_end = clip_ranges[last_c][1]
+            fc_lo, fc_hi = clip_ranges[first_c]
+            sug_title, sug_detail = _clean_scene_title_and_detail(
+                sname, clip_info.get(first_c, {}).get("prompt", ""), len(story_scenes) + 1
+            )
             story_scenes.append(
                 {
                     "scene_id": sid,
                     "scene_name": sname,
+                    "suggested_title": sug_title,
+                    "suggested_detail": sug_detail,
                     "start_s": s_start,
                     "end_s": s_end,
                     "first_clip": first_c,
-                    "first_clip_window_s": list(clip_ranges[first_c]),
-                    "first_clip_kept_segments": clip_info.get(first_c, {}).get("kept_segments", []),
-                    "first_clip_shots": clip_info.get(first_c, {}).get("shot_breakdown", ""),
+                    "first_clip_window_s": f"{fc_lo:.2f}-{fc_hi:.2f}s",
                 }
             )
             w_lo = int(max(0.0, s_start))
@@ -1249,11 +1362,14 @@ def extract_screenplay_ground_truth(
         lbl_str = ref.get("label") or ""
         desc_str = (ref.get("desc") or "").splitlines()[0]
         full_label = f"{lbl_str} — {desc_str}".strip(" —") if (lbl_str or desc_str) else rid
+        sug_c_title, sug_c_detail = _clean_char_title_and_detail(lbl_str or rid, desc_str)
         entry = char_groups.setdefault(
             base_id,
             {
                 "id": base_id,
                 "label": full_label,
+                "suggested_title": sug_c_title,
+                "suggested_detail": sug_c_detail,
                 "clips": [],
             },
         )
@@ -1275,10 +1391,7 @@ def extract_screenplay_ground_truth(
                     "clip": c,
                     "start_s": c_lo,
                     "end_s": c_hi,
-                    "kept_segments": ci.get("kept_segments", []),
-                    "notes": ci.get("notes", ""),
-                    "dialogue": ci.get("dialogue", ""),
-                    "shot_breakdown": ci.get("shot_breakdown", ""),
+                    "dialogue": (ci.get("dialogue") or "")[:120],
                 }
             )
             if idx_c_clip == 0:
@@ -1286,7 +1399,9 @@ def extract_screenplay_ground_truth(
         char_appearances.append(
             {
                 "character_id": base_id,
-                "label": info["label"],
+                "label": info["label"][:110],
+                "suggested_title": info["suggested_title"],
+                "suggested_detail": info["suggested_detail"],
                 "first_appearance_s": clip_ranges[clips_sorted[0]][0],
                 "first_clips": first_clips,
             }
@@ -1670,41 +1785,7 @@ def build_screenplay_subtitle_context(
     - `canonical_phrases`: compiled regexes for numbered clauses (`Clause 9`, `Stall 9`) and multi-word proper names (`Coral Reach`)
     - `recommended_style`: world-matched Cinema Art-Direction Style
     """
-    sf_board_path: Path | None = None
-    for seg in video_segs:
-        if not seg.path:
-            continue
-        p = Path(seg.path)
-        for parent in (p.parent, p.parent.parent):
-            cand = parent / "sf-board.json"
-            if cand.exists():
-                sf_board_path = cand
-                break
-        if sf_board_path:
-            break
-
-    if not sf_board_path and subs:
-        sub_blob = " ".join(c.get("text", "") for c in subs[:40]).lower()
-        sub_words = _norm_words(sub_blob)
-        ws_root = Path("/Users/daho100/Documents/SF Board")
-        if ws_root.exists() and sub_words:
-            cands = list(ws_root.glob("*.project/sf-board.json"))
-            min_hits = max(6, int(len(sub_words) * 0.35))
-
-            def _score_cand(cand: Path) -> tuple[int, Path]:
-                try:
-                    raw = cand.read_text(encoding="utf-8")[:60000].lower()
-                    return sum(1 for w in sub_words if w in raw), cand
-                except Exception:
-                    return 0, cand
-
-            if cands:
-                with ThreadPoolExecutor(max_workers=min(DEFAULT_MAX_WORKERS, len(cands))) as pool:
-                    scored = list(pool.map(_score_cand, cands))
-                best_score, best_cand = max(scored, key=lambda x: x[0])
-                if best_score >= min_hits:
-                    sf_board_path = best_cand
-
+    sf_board_path = _locate_sf_board_path(video_segs, subs)
     if not sf_board_path:
         return {}
 
@@ -1842,6 +1923,140 @@ def build_screenplay_subtitle_context(
     }
 
 
+def build_auto_starter_plan(
+    video_segs: list[VideoSegment],
+    story_scenes: list[dict[str, Any]],
+    char_appearances: list[dict[str, Any]],
+    rec_style: dict[str, Any],
+    duration_sec: float,
+    has_subtitles: bool,
+) -> dict[str, Any]:
+    """
+    Build a complete, sub-shot-locked starter `plan.json` directly from the screenplay ground truth
+    and `extract_fast_timeline_cuts()` so the AI agent never has to manually construct 40-50 cards
+    from scratch.
+    """
+    fast_cuts = extract_fast_timeline_cuts(video_segs)
+
+    def _sub_shots_in(lo_s: float, hi_s: float) -> list[tuple[float, float]]:
+        bnds = [lo_s] + [c for c in fast_cuts if lo_s + 0.25 < c < hi_s - 0.25] + [hi_s]
+        out = [(round(bnds[i], 2), round(bnds[i + 1], 2)) for i in range(len(bnds) - 1) if bnds[i + 1] - bnds[i] >= 1.8]
+        return out or [(round(lo_s, 2), round(hi_s, 2))]
+
+    starter_cards: list[dict[str, Any]] = []
+    occupied_windows: list[tuple[float, float]] = []
+
+    # 1. Scene / Location Cards
+    for idx_sc, sc in enumerate(story_scenes, start=1):
+        fc_win_raw = sc.get("first_clip_window_s")
+        if isinstance(fc_win_raw, str) and "-" in fc_win_raw:
+            a_s, b_s = fc_win_raw.rstrip("s").split("-", 1)
+            fc_win = [float(a_s), float(b_s)]
+        elif isinstance(fc_win_raw, (list, tuple)) and len(fc_win_raw) == 2:
+            fc_win = [float(fc_win_raw[0]), float(fc_win_raw[1])]
+        else:
+            fc_win = [float(sc.get("start_s", 0.0)), float(sc.get("start_s", 0.0)) + 5.0]
+        subs_sc = _sub_shots_in(fc_win[0], fc_win[1])
+        slo, shi = subs_sc[0]
+        c_start = round(slo + 0.15, 2)
+        c_end = round(min(shi - 0.10, c_start + 3.60), 2)
+        if c_end - c_start < 1.8:
+            c_end = round(min(float(fc_win[1]), c_start + 3.20), 2)
+        title = sc.get("suggested_title") or _clean_scene_title_and_detail(sc.get("scene_name", ""), "", idx_sc)[0]
+        detail = sc.get("suggested_detail") or _clean_scene_title_and_detail(sc.get("scene_name", ""), "", idx_sc)[1]
+        starter_cards.append(
+            {
+                "kind": "scene",
+                "scene_id": sc.get("scene_id", f"S{idx_sc:02d}"),
+                "start": c_start,
+                "end": c_end,
+                "title": title,
+                "detail": detail,
+                "anchor": "auto",
+            }
+        )
+        occupied_windows.append((c_start, c_end))
+
+    # 2. Character Introduction Cards (placed on first non-colliding sub-shot or second sub-shot)
+    for ch in char_appearances:
+        f_clips = ch.get("first_clips") or []
+        if not f_clips:
+            continue
+        cand_shots: list[tuple[float, float]] = []
+        for fc in f_clips:
+            cand_shots.extend(_sub_shots_in(float(fc["start_s"]), float(fc["end_s"])))
+        chosen_shot = cand_shots[0]
+        for slo, shi in cand_shots:
+            s_try = round(slo + 0.15, 2)
+            e_try = round(min(shi - 0.10, s_try + 3.60), 2)
+            if not any(not (e_try <= o_lo + 0.2 or s_try >= o_hi - 0.2) for o_lo, o_hi in occupied_windows):
+                chosen_shot = (slo, shi)
+                break
+        slo, shi = chosen_shot
+        c_start = round(slo + 0.15, 2)
+        c_end = round(min(shi - 0.10, c_start + 3.60), 2)
+        if c_end - c_start < 1.8:
+            c_end = round(c_start + 3.20, 2)
+        starter_cards.append(
+            {
+                "kind": "char",
+                "character_id": ch.get("character_id", ""),
+                "start": c_start,
+                "end": c_end,
+                "title": ch.get("suggested_title") or ch.get("label", "Character"),
+                "detail": ch.get("suggested_detail") or "Featured Character",
+                "anchor": "auto",
+            }
+        )
+        occupied_windows.append((c_start, c_end))
+
+    # 3. THE END Card
+    if duration_sec > 15.0:
+        end_start = round(max(0.0, duration_sec - 5.20), 2)
+        last_sc_title = starter_cards[-1]["title"] if starter_cards else "Final Chapter"
+        for sc_c in reversed(starter_cards):
+            if sc_c.get("kind") == "scene":
+                last_sc_title = sc_c["title"]
+                break
+        starter_cards.append(
+            {
+                "kind": "end",
+                "start": end_start,
+                "end": round(duration_sec, 2),
+                "title": "THE END",
+                "detail": last_sc_title,
+                "anchor": "lower-center",
+                "hold_to_end": True,
+            }
+        )
+
+    starter_cards.sort(key=lambda c: (float(c["start"]), 0 if c["kind"] == "scene" else 1))
+    return {
+        "style": dict(rec_style) if rec_style else {},
+        "cards": starter_cards,
+        "subtitles": {
+            "style_in_place": bool(has_subtitles),
+            "normalize_with_screenplay": True,
+            "sentence_case": True,
+            "font": "Seravek-Medium",
+            "size": 4.2,
+            "text_size": 30,
+            "color": "#E5CE6E",
+            "y": -0.78,
+            "stroke_color": "#0A0C0E",
+            "stroke_width": 0.028,
+            "stroke_alpha": 0.95,
+            "shadow_color": "#050608",
+            "shadow_alpha": 0.82,
+            "shadow_smoothing": 2.58,
+            "shadow_distance": 1.8,
+            "shadow_diffuse": 0.1435,
+            "word_replacements": {},
+            "cue_overrides": {},
+        },
+    }
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     project_dir = resolve_project_dir(args.project)
     draft = load_draft(project_dir)
@@ -1862,23 +2077,45 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         if subs
         else "none_in_draft_do_not_search_other_files (auto-captions not generated in CapCut yet)"
     )
+    duration_sec = (
+        video_segs[-1].timeline_end_s
+        if video_segs
+        else round(float(draft.get("duration", 0)) / 1e6, 3)
+    )
+    story_scenes = gt.get("story_scenes") or scenes
+    char_appearances = gt.get("character_appearances", [])
+    rec_style = gt.get("recommended_style", {})
 
-    payload = {
+    starter_plan_path = Path(f"/tmp/starter_plan_{project_dir.name}.json")
+    default_plan_path = Path(f"/tmp/plan_{project_dir.name}.json")
+    starter_plan = build_auto_starter_plan(
+        video_segs, story_scenes, char_appearances, rec_style, duration_sec, bool(subs)
+    )
+    with starter_plan_path.open("w", encoding="utf-8") as pfh:
+        json.dump(starter_plan, pfh, ensure_ascii=False, indent=2)
+    if not default_plan_path.exists():
+        shutil.copyfile(str(starter_plan_path), str(default_plan_path))
+
+    payload: dict[str, Any] = {
         "project": project_dir.name,
         "project_dir": str(project_dir),
-        "duration_sec": (
-            video_segs[-1].timeline_end_s
-            if video_segs
-            else round(float(draft.get("duration", 0)) / 1e6, 3)
-        ),
+        "duration_sec": duration_sec,
         "video_segment_count": len(video_segs),
-        "scene_count": len(gt.get("story_scenes") or scenes),
-        "recommended_style": gt.get("recommended_style", {}),
-        "story_scenes": gt.get("story_scenes") or scenes,
-        "character_appearances": gt.get("character_appearances", []),
+        "scene_count": len(story_scenes),
+        "character_count": len(char_appearances),
+        "starter_plan_path": str(starter_plan_path),
+        "starter_card_count": len(starter_plan["cards"]),
+        "recommended_style": rec_style,
         "recommended_probe_windows": gt.get("recommended_probe_windows", ""),
         "screenplay_source": gt.get("screenplay_source"),
-        "video_segments": [
+        "existing_card_segment_count": len(cards),
+        "subtitle_cue_count": len(subs),
+        "subtitle_status": sub_status,
+        "story_scenes": story_scenes,
+        "character_appearances": char_appearances,
+    }
+    if getattr(args, "full", False):
+        payload["video_segments"] = [
             {
                 "index": s.index,
                 "start_s": s.timeline_start_s,
@@ -1888,13 +2125,9 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 "clip": s.clip_name,
             }
             for s in video_segs
-        ],
-        "existing_card_segment_count": len(cards),
-        "existing_cards": cards,
-        "subtitle_cue_count": len(subs),
-        "subtitle_status": sub_status,
-        "subtitles": subs,
-    }
+        ]
+        payload["existing_cards"] = cards
+        payload["subtitles"] = subs
 
     out_path = (
         Path(os.path.expanduser(args.out))
@@ -1911,10 +2144,12 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 "duration_sec": payload["duration_sec"],
                 "video_segment_count": payload["video_segment_count"],
                 "scene_count": payload["scene_count"],
-                "character_count": len(payload.get("character_appearances", [])),
+                "character_count": payload["character_count"],
                 "screenplay_source": payload.get("screenplay_source"),
                 "recommended_style_archetype": (payload.get("recommended_style") or {}).get("archetype"),
                 "recommended_probe_windows": payload.get("recommended_probe_windows", ""),
+                "starter_plan_path": str(starter_plan_path),
+                "starter_card_count": len(starter_plan["cards"]),
                 "existing_card_segment_count": payload["existing_card_segment_count"],
                 "subtitle_cue_count": payload["subtitle_cue_count"],
                 "subtitle_status": sub_status,
@@ -1953,11 +2188,11 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
     fast_cuts = extract_fast_timeline_cuts(video_segs)
 
-    # Phase 1: Compute window cuts across all windows in parallel
+    # Phase 1: Compute window cuts across all windows in parallel (only run ffmpeg scdet when --scdet is set or flat video has <= 2 cuts)
     def _compute_window_cuts(item: tuple[int, tuple[float, float]]) -> dict[str, Any]:
         w_idx, (w_start, w_end) = item
         win_fast = [c for c in fast_cuts if w_start + 0.15 < c < w_end - 0.15]
-        if getattr(args, "scdet", False) or not win_fast:
+        if getattr(args, "scdet", False) or len(fast_cuts) <= 2:
             cuts_info = detect_window_cuts(video_segs, w_start, w_end)
             all_cuts = sorted(set(cuts_info["all_cuts"] + win_fast))
             seg_cuts = cuts_info["segment_cuts"]
@@ -2014,40 +2249,32 @@ def cmd_probe(args: argparse.Namespace) -> int:
     for w_idx, a, b, mid_t, f_jpg, ok, cname, best_anc in flat_results:
         by_win.setdefault(w_idx, []).append((a, b, mid_t, f_jpg, ok, cname, best_anc))
 
-    # Phase 3: Build per-window contact sheets and overview batch sheets in parallel
+    # Phase 3: Build ONLY 4x6 overview batch sheets (probe_batch_01..NN.jpg) and compact report
     report_windows: list[dict[str, Any]] = []
     all_frame_items: list[tuple[float, str, Path]] = []
     sheet_jobs: list[tuple[list[tuple[float, str, Path]], Path, int]] = []
+    all_probed_shots: list[dict[str, Any]] = []
 
     for wm in win_metas:
         w_idx = wm["w_idx"]
         w_start, w_end = wm["w_start"], wm["w_end"]
         w_items = by_win.get(w_idx, [])
-        frame_items: list[tuple[float, str, Path]] = []
         sub_shots: list[dict[str, Any]] = []
         for a, b, mid_t, f_jpg, ok, cname, best_anc in w_items:
             if ok:
-                frame_items.append((mid_t, cname, f_jpg))
                 all_frame_items.append((mid_t, f"{a:.1f}-{b:.1f}s ({best_anc})", f_jpg))
-            sub_shots.append(
-                {
-                    "start_s": a,
-                    "end_s": b,
-                    "dur_s": round(b - a, 2),
-                    "best_anchor": best_anc,
-                }
-            )
-        sheet_path = out_dir / f"sheet_{w_idx:02d}_{int(w_start):04d}_{int(w_end):04d}.jpg"
-        if frame_items:
-            sheet_jobs.append((frame_items, sheet_path, 4))
+            shot_obj = {
+                "start_s": a,
+                "end_s": b,
+                "dur_s": round(b - a, 2),
+                "best_anchor": best_anc,
+            }
+            sub_shots.append(shot_obj)
+            all_probed_shots.append(shot_obj)
         report_windows.append(
             {
-                "window": f"{w_start:.2f}-{w_end:.2f}s",
-                "segment_cuts": wm["seg_cuts"],
-                "scdet_cuts": wm["scdet_cuts"],
-                "all_cuts": wm["all_cuts"],
-                "sub_shots": sub_shots,
-                "contact_sheet": str(sheet_path) if frame_items else None,
+                "window": f"{w_start:.1f}-{w_end:.1f}s",
+                "sub_shots": [f"{s['start_s']:.1f}-{s['end_s']:.1f}s ({s['best_anchor']})" for s in sub_shots],
             }
         )
 
@@ -2065,10 +2292,31 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
     batch_sheets = [str(bp) for bp in batch_paths if bp.exists()]
 
+    # Automatically update /tmp/plan_<project>.json with probed best_anchor if it exists
+    starter_plan_path = Path(f"/tmp/plan_{project_dir.name}.json")
+    if starter_plan_path.exists() and all_probed_shots:
+        try:
+            sp_data = json.loads(starter_plan_path.read_text(encoding="utf-8"))
+            for c in sp_data.get("cards", []):
+                if c.get("kind") == "end":
+                    continue
+                cs = float(c.get("start", 0.0))
+                ce = float(c.get("end", cs + 3.5))
+                mid_c = (cs + ce) * 0.5
+                for ps in all_probed_shots:
+                    if ps["start_s"] - 0.3 <= mid_c <= ps["end_s"] + 0.3:
+                        if str(c.get("anchor") or "auto") == "auto":
+                            c["anchor"] = ps["best_anchor"]
+                        break
+            starter_plan_path.write_text(json.dumps(sp_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
     report_path = out_dir / "probe_report.json"
     out_payload = {
         "project": project_dir.name,
         "report": str(report_path),
+        "starter_plan_path": str(starter_plan_path) if starter_plan_path.exists() else None,
         "batch_sheets": batch_sheets,
         "windows": report_windows,
     }
@@ -2081,6 +2329,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
                 "window_count": len(report_windows),
                 "sub_shot_count": len(all_frame_items),
                 "batch_sheets": batch_sheets,
+                "starter_plan_path": str(starter_plan_path) if starter_plan_path.exists() else None,
                 "saved_report": str(report_path),
             },
             indent=2,
@@ -2247,6 +2496,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ins = sub.add_parser("inspect", help="Inspect video timeline, scene boundaries, cards, and subtitles.")
     p_ins.add_argument("project", help="CapCut project name or path")
     p_ins.add_argument("--out", help="Optional JSON output path")
+    p_ins.add_argument("--full", action="store_true", help="Include raw video_segments, existing_cards, and subtitles arrays")
     p_ins.set_defaults(func=cmd_inspect)
 
     p_prb = sub.add_parser("probe", help="Detect shot cuts (segment + scdet) and render labeled contact sheets.")
