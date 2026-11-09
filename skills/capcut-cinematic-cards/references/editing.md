@@ -5,7 +5,12 @@
 Every film has its own world, lighting regime, and dramatic tension. `cards.py inspect` automatically analyzes `sf-board.json` and synthesizes `"recommended_style"` across **5 pillars**:
 
 ### Pillar A: World-Matched Serif + Italic Serif Archetypes
-All 7 screenplay archetypes use high-craft Serif Titles (`6.8` character / `6.6` scene) paired with Mixed-Case Calligraphic Italic Serif Details (`detail_size: 5.0`, `scene_detail_size: 5.0`, `detail_uppercase: false`) and `align: "center"` (`x_title == x_detail`):
+All 8 screenplay archetypes use high-craft Serif Titles (`6.8` character / `6.6` scene) paired with Mixed-Case Calligraphic Italic Serif Details (`detail_size: 5.0`, `scene_detail_size: 5.0`, `detail_uppercase: false`) and `align: "center"` (`x_title == x_detail`):
+- **Urban Heritage / Childhood Home / Real Estate / Philanthropy (`philanthropic_real_estate_heritage`)**:
+  - `title_font`: `Cinzel-Bold` (`scene_title_font`: `PlayfairDisplay-Bold`)
+  - `detail_font`: `CormorantGaramond-BoldItalic` (`detail_size: 5.0`, auto-boosted `1.14x` for low `xHeight`)
+  - Palette: Heritage Gold `#F0C76E` + Warm Ivory `#F7F1E5` + Amber Gold `#E8B954`
+  - Flankers: `"—"` (characters), `"·"` (scene cards)
 - **Smokehouse / Heartland / County Fair / Americana (`rustic_heartland_americana`)**:
   - `title_font`: `Fraunces-Bold` (`scene_title_font`: `Bitter-Bold`)
   - `detail_font`: `Lora-BoldItalic` (`detail_size: 5.0`, `scene_detail_size: 5.0`, `detail_uppercase: false`)
@@ -62,8 +67,9 @@ Use optional per-card `title_color` and `accent_color` overrides to reflect dram
 - Use `"order": "title-first"` for character cards (Name on top, Role underneath) and `"scene_order": "detail-first"` for scene/location cards (Time/Context kicker on top, Location Title underneath).
 - `stagger_sec` (default `0.10s`) delays the secondary line's fade-in by 3 frames after the primary line.
 
-### Pillar E: Centered-Axis Symmetry (`align: "center"`)
+### Pillar E: Centered-Axis Symmetry (`align: "center"`) & Two-Shot Subject Attribution
 - `"center"` locks `x_title == x_detail` on the exact same vertical center axis while anchoring the outer edge of the card block within safe screen bounds (`±0.88`).
+- **Two-Shot Subject Attribution (`_detect_two_shot_char_side_anchor`)**: When a character card appears on a two-shot or multi-character medium/wide shot, `generate_starter_plan` automatically inspects the clip's screenplay `prompt` for explicit left/right blocking (`CHAR6a ... on the left` -> `"anchor": "lower-left"`, `CHAR7a ... on the right` -> `"anchor": "lower-right"`, with `"auto_avoid_glare": false`) so the character card sits beneath the correct actor (while `apply_daylight_contrast_guard` boosts stroke/shadow if that actor's clothing is bright). For solo close-ups (`close-up on CHAR...`), `"anchor": "auto"` places the card in the open negative-space corner.
 
 ## 2. Fast Starter Plan & Sub-Shot Timing (`< 5–15 Min` Total Workflow)
 

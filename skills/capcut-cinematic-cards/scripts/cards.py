@@ -11,13 +11,16 @@ import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import difflib
 from pathlib import Path
 from typing import Any
 
 from native_text import (
     DEFAULT_MAX_WORKERS,
     FilmCardStyle,
+    TextLayerStyle,
+    _uid,
     build_card_pair,
     ensure_capcut_font,
     ensure_capcut_fonts_parallel,
@@ -47,6 +50,23 @@ class VideoSegment:
     speed: float
     path: str
     clip_name: str
+    subdraft_id: str | None = None
+
+    @property
+    def duration_s(self) -> float:
+        return self.timeline_dur_s
+
+    @property
+    def start_s(self) -> float:
+        return self.timeline_start_s
+
+    @property
+    def end_s(self) -> float:
+        return self.timeline_end_s
+
+    @property
+    def material_path(self) -> str:
+        return self.path
 
 
 def resolve_project_dir(project: str) -> Path:
@@ -258,6 +278,9 @@ def load_video_timeline(draft: dict[str, Any]) -> list[VideoSegment]:
     ]
 
 
+extract_video_segments = load_video_timeline
+
+
 def group_scene_boundaries(segments: list[VideoSegment]) -> list[dict[str, Any]]:
     """Group consecutive video segments by scene identifier (e.g. scene_001.mp4 or V-S1-*)."""
     if not segments:
@@ -379,8 +402,12 @@ def detect_window_cuts(
     win_start: float,
     win_end: float,
     scdet_threshold: float = 10.0,
+    *,
+    threshold: float | None = None,
+    enable_scdet: bool = True,
 ) -> dict[str, list[float]]:
     """Return both edit-segment boundaries and internal ffmpeg scdet camera cuts inside [win_start, win_end] in parallel."""
+    eff_thresh = float(threshold) if threshold is not None else float(scdet_threshold)
     seg_cuts: list[float] = []
     scdet_tasks: list[tuple[VideoSegment, float, float]] = []
 
@@ -392,7 +419,7 @@ def detect_window_cuts(
         if win_start < seg.timeline_end_s < win_end:
             seg_cuts.append(round(seg.timeline_end_s, 2))
 
-        if not os.path.exists(seg.path):
+        if not enable_scdet or not os.path.exists(seg.path):
             continue
         ov_start = max(win_start, seg.timeline_start_s)
         ov_end = min(win_end, seg.timeline_end_s)
@@ -401,10 +428,33 @@ def detect_window_cuts(
             continue
         scdet_tasks.append((seg, ov_start, ov_dur))
 
+    scdet_cache_dir = Path("/tmp/_capcut_scdet_cache")
+    if scdet_tasks:
+        scdet_cache_dir.mkdir(parents=True, exist_ok=True)
+
     def _run_scdet(item: tuple[VideoSegment, float, float]) -> list[float]:
         seg, ov_start, ov_dur = item
         src_offset = seg.source_start_s + (ov_start - seg.timeline_start_s) * seg.speed
         src_dur = ov_dur * seg.speed
+        try:
+            st = os.stat(seg.path)
+            cache_sig = hashlib.md5(
+                f"{os.path.abspath(seg.path)}:{st.st_mtime_ns}:{src_offset:.2f}:{src_dur:.2f}:{eff_thresh:.1f}".encode("utf-8")
+            ).hexdigest()[:14]
+        except Exception:
+            cache_sig = ""
+        cache_f = scdet_cache_dir / f"scdet_{cache_sig}.json" if cache_sig else None
+        if cache_f and cache_f.exists():
+            try:
+                rel_cuts = json.loads(cache_f.read_text(encoding="utf-8"))
+                return [
+                    round(ov_start + float(rc) / max(seg.speed, 1e-6), 2)
+                    for rc in rel_cuts
+                    if win_start + 0.15 < round(ov_start + float(rc) / max(seg.speed, 1e-6), 2) < win_end - 0.15
+                ]
+            except Exception:
+                pass
+
         cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -415,16 +465,22 @@ def detect_window_cuts(
             "-i",
             seg.path,
             "-vf",
-            f"scale=160:90,scdet=t={scdet_threshold}:s=1,metadata=mode=print",
+            f"scale=160:90,scdet=t={eff_thresh}:s=1,metadata=mode=print",
             "-an",
             "-f",
             "null",
             "-",
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
+        rel_times = [float(m) for m in re.findall(r"lavfi\.scd\.time=([0-9.]+)", res.stderr)]
+        if cache_f:
+            try:
+                cache_f.write_text(json.dumps(rel_times), encoding="utf-8")
+            except Exception:
+                pass
         found: list[float] = []
-        for m in re.findall(r"lavfi\.scd\.time=([0-9.]+)", res.stderr):
-            tl_cut = round(ov_start + float(m) / max(seg.speed, 1e-6), 2)
+        for rt in rel_times:
+            tl_cut = round(ov_start + rt / max(seg.speed, 1e-6), 2)
             if win_start + 0.15 < tl_cut < win_end - 0.15:
                 found.append(tl_cut)
         return found
@@ -439,6 +495,7 @@ def detect_window_cuts(
 
     all_cuts = sorted(set(seg_cuts + scdet_cuts))
     return {
+        "fast_cuts": sorted(set(seg_cuts)),
         "segment_cuts": sorted(set(seg_cuts)),
         "scdet_cuts": sorted(set(scdet_cuts)),
         "all_cuts": all_cuts,
@@ -526,9 +583,9 @@ def extract_frame_at_timeline_sec(
 
 def score_frame_negative_space(frame_path: Path) -> dict[str, Any]:
     """
-    Evaluate luminance, 90th-percentile brightness (glare/white signage), and bright-pixel ratio
+    Evaluate luminance, 90th-percentile brightness (glare/white signage/sky), and bright-pixel ratio
     across the 4 corner zones ('lower-left', 'lower-right', 'upper-left', 'upper-right') on `frame_path`.
-    Returns zone stats and `best_anchor` (lowest cost = darkest, least glared negative space).
+    Returns zone stats (both in `zones` and as top-level keys) and `best_anchor`.
     """
     try:
         from PIL import Image
@@ -541,7 +598,7 @@ def score_frame_negative_space(frame_path: Path) -> dict[str, Any]:
             "upper-left": (10, 6, 74, 26),
             "upper-right": (86, 6, 150, 26),
         }
-        zones: dict[str, dict[str, float]] = {}
+        zones: dict[str, dict[str, Any]] = {}
         for zname, box in boxes.items():
             cropped = gray.crop(box)
             px = sorted(getattr(cropped, "get_flattened_data", cropped.getdata)())
@@ -552,15 +609,140 @@ def score_frame_negative_space(frame_path: Path) -> dict[str, Any]:
             upper_pen = 18.0 if zname.startswith("upper") else 0.0
             cost = round(mean_l + 0.85 * p90_l + 240.0 * bright_r + upper_pen, 2)
             zones[zname] = {
+                "anchor": zname,
                 "mean_luma": round(mean_l, 1),
                 "p90_luma": round(p90_l, 1),
                 "bright_ratio": round(bright_r, 3),
+                "bright_glare": bool(p90_l >= 195.0 or bright_r >= 0.22),
                 "cost": cost,
             }
         best_anchor = min(zones.keys(), key=lambda k: zones[k]["cost"])
-        return {"best_anchor": best_anchor, "zones": zones}
+        return {
+            "best_anchor": best_anchor,
+            "recommended_anchor": best_anchor,
+            "zones": zones,
+            **zones,
+        }
     except Exception:
-        return {"best_anchor": "lower-left", "zones": {}}
+        return {"best_anchor": "lower-left", "recommended_anchor": "lower-left", "zones": {}}
+
+
+score_negative_space = score_frame_negative_space
+
+
+def resolve_glare_safe_anchor(
+    req_anchor: str,
+    ns_or_zones: dict[str, Any],
+    *,
+    is_scene_card: bool = False,
+) -> tuple[str, str]:
+    """
+    Check if `req_anchor` ('lower-left', 'lower-right', 'upper-left', 'upper-right') sits over
+    bright glare / sky / white signage, and automatically flip to a darker, cleaner corner.
+    """
+    zones = ns_or_zones.get("zones") if isinstance(ns_or_zones.get("zones"), dict) else ns_or_zones
+    if not zones:
+        return req_anchor, ""
+    canon_map = {
+        "lower-left": "lower-left",
+        "chest-left": "lower-left",
+        "side-low-left": "lower-left",
+        "lower-right": "lower-right",
+        "chest-right": "lower-right",
+        "side-low-right": "lower-right",
+        "upper-left": "upper-left",
+        "top-left": "upper-left",
+        "corner-left": "upper-left",
+        "upper-right": "upper-right",
+        "top-right": "upper-right",
+        "corner-right": "upper-right",
+    }
+    canon = canon_map.get(req_anchor)
+    if not canon or canon not in zones:
+        return req_anchor, ""
+
+    z_cur = zones[canon]
+    cur_p90 = float(z_cur.get("p90_luma", 0.0))
+    cur_br = float(z_cur.get("bright_ratio", 0.0))
+    cur_mean = float(z_cur.get("mean_luma", 0.0))
+    cur_cost = float(z_cur.get("cost", 0.0))
+
+    has_glare = cur_p90 >= 195.0 or cur_br >= 0.22 or cur_mean >= 152.0
+    if not has_glare:
+        return req_anchor, ""
+
+    if canon.startswith("upper-"):
+        opp_upper = "upper-left" if canon == "upper-right" else "upper-right"
+        cands = [opp_upper, "lower-left", "lower-right"]
+    else:
+        opp_lower = "lower-right" if canon == "lower-left" else "lower-left"
+        cands = [opp_lower, "upper-left", "upper-right"]
+
+    best_cand = canon
+    best_cost = cur_cost
+    for cand in cands:
+        zc = zones.get(cand)
+        if not zc:
+            continue
+        c_cost = float(zc.get("cost", 999.0))
+        c_p90 = float(zc.get("p90_luma", 255.0))
+        if c_cost < best_cost - 32.0 and (c_p90 < 195.0 or c_p90 < cur_p90 - 25.0):
+            best_cand = cand
+            best_cost = c_cost
+
+    if best_cand != canon:
+        return best_cand, f"{req_anchor}->{best_cand}(glare_p90={cur_p90:.0f})"
+    return req_anchor, ""
+
+
+def apply_daylight_contrast_guard(
+    t_style: TextLayerStyle,
+    d_style: TextLayerStyle,
+    zone_metrics: dict[str, Any] | None,
+) -> tuple[TextLayerStyle, TextLayerStyle, bool]:
+    """
+    When a card's resolved zone still sits over bright daylight (p90_luma >= 180 or mean_luma >= 135),
+    automatically boost dark outline stroke_width and optical drop shadow so light serif text never
+    washes out against bright skies, concrete, or sunlit walls.
+    """
+    if not zone_metrics:
+        return t_style, d_style, False
+    p90 = float(zone_metrics.get("p90_luma", 0.0))
+    mean_l = float(zone_metrics.get("mean_luma", 0.0))
+    bright_r = float(zone_metrics.get("bright_ratio", 0.0))
+    if p90 < 112.0 and mean_l < 62.0 and bright_r < 0.02:
+        return t_style, d_style, False
+
+    min_sw = 0.032 if (p90 >= 165.0 or mean_l >= 120.0) else 0.027
+    min_sh_a = 0.96 if (p90 >= 165.0 or mean_l >= 120.0) else 0.92
+    min_sh_sm = 0.42
+    min_sh_dist = 2.4
+
+    new_t_sw = max(t_style.stroke_width, min_sw)
+    new_d_sw = max(d_style.stroke_width, round(new_t_sw * 0.92, 4))
+    new_sh_a = max(t_style.shadow_alpha, min_sh_a)
+    new_sh_sm = max(t_style.shadow_smoothing, min_sh_sm)
+    new_sh_dist = max(t_style.shadow_distance, min_sh_dist)
+
+    t_boosted = replace(
+        t_style,
+        stroke_width=new_t_sw,
+        stroke_alpha=max(t_style.stroke_alpha, 0.94),
+        shadow_alpha=new_sh_a,
+        shadow_smoothing=new_sh_sm,
+        shadow_distance=new_sh_dist,
+        check_flag=47,
+    )
+    d_boosted = replace(
+        d_style,
+        stroke_width=new_d_sw,
+        stroke_alpha=max(d_style.stroke_alpha, 0.94),
+        shadow_alpha=new_sh_a,
+        shadow_smoothing=new_sh_sm,
+        shadow_distance=new_sh_dist,
+        check_flag=47,
+    )
+    return t_boosted, d_boosted, True
 
 
 def extract_fast_timeline_cuts(video_segs: list[VideoSegment]) -> list[float]:
@@ -678,11 +860,104 @@ def strip_card_tracks(draft: dict[str, Any]) -> None:
         ]
 
 
+def _ensure_outro_black_segment(draft: dict[str, Any], outro_black_sec: float) -> float:
+    """
+    Idempotently append or update a solid 1920x1080 30fps black video segment (`V-OUTRO-BLACK.mp4`)
+    at the end of the main video track when `outro_black_sec > 0`, returning the updated film duration in seconds.
+    """
+    dur_s = round(max(0.0, float(outro_black_sec)), 3)
+    if dur_s <= 0.05:
+        return 0.0
+    dur_us = int(round(dur_s * 1_000_000))
+    cache_dir = Path("/tmp/_capcut_frame_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    black_mp4 = cache_dir / f"V-OUTRO-BLACK-{int(round(dur_s * 10)):04d}.mp4"
+    if not black_mp4.exists() or black_mp4.stat().st_size < 1000:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c=black:s=1920x1080:r=30:d={dur_s:.2f}",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(black_mp4),
+            ],
+            check=False,
+        )
+
+    mats = draft.setdefault("materials", {})
+    vids = mats.setdefault("videos", [])
+    outro_mat_id = "CC_OUTRO_BLACK_MAT"
+    existing_mat = next((m for m in vids if m.get("id") == outro_mat_id or "V-OUTRO-BLACK" in str(m.get("path", ""))), None)
+    if existing_mat is not None:
+        outro_mat_id = existing_mat["id"]
+        existing_mat["path"] = str(black_mp4)
+        existing_mat["duration"] = dur_us
+        existing_mat["material_name"] = "V-OUTRO-BLACK.mp4"
+    else:
+        vids.append(
+            {
+                "id": outro_mat_id,
+                "type": "video",
+                "path": str(black_mp4),
+                "material_name": "V-OUTRO-BLACK.mp4",
+                "duration": dur_us,
+                "width": 1920,
+                "height": 1080,
+                "has_audio": False,
+                "category_name": "local",
+            }
+        )
+
+    v_tracks = [tr for tr in draft.get("tracks", []) if tr.get("type") == "video" and tr.get("segments")]
+    if not v_tracks:
+        return 0.0
+    main_vtr = v_tracks[0]
+    segs = main_vtr["segments"]
+    # Remove any prior outro black segment so re-running apply is 100% idempotent
+    segs[:] = [s for s in segs if s.get("material_id") != outro_mat_id and s.get("id") != "CC_OUTRO_BLACK_SEG"]
+    base_end_us = max(
+        (int(s.get("target_timerange", {}).get("start", 0)) + int(s.get("target_timerange", {}).get("duration", 0)) for s in segs),
+        default=0,
+    )
+    segs.append(
+        {
+            "id": "CC_OUTRO_BLACK_SEG",
+            "material_id": outro_mat_id,
+            "target_timerange": {"start": base_end_us, "duration": dur_us},
+            "source_timerange": {"start": 0, "duration": dur_us},
+            "speed": 1.0,
+            "volume": 0.0,
+            "visible": True,
+            "render_index": 0,
+            "clip": {
+                "alpha": 1.0,
+                "flip": {"horizontal": False, "vertical": False},
+                "rotation": 0.0,
+                "scale": {"x": 1.0, "y": 1.0},
+                "transform": {"x": 0.0, "y": 0.0},
+            },
+        }
+    )
+    total_us = base_end_us + dur_us
+    draft["duration"] = max(int(draft.get("duration", 0)), total_us)
+    return round(total_us / 1e6, 3)
+
+
 def apply_plan_to_draft(
     draft: dict[str, Any],
     plan: dict[str, Any],
     *,
     snap_to_cuts: bool = True,
+    screenplay_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """
     Apply a card + subtitle plan directly to `draft` in memory.
@@ -691,8 +966,13 @@ def apply_plan_to_draft(
     - Outer-edge alignment using true fontTools glyph width
     - Simultaneous overlapping cards (multi-track allocation: Track Pair 1, Track Pair 2, ...)
     - Camera-cut end snapping so cards don't bleed 0.3-1.0s into the next shot
+    - Optional `outro_black_sec` (appends/updates a black outro segment for THE END card)
     - Optional in-place subtitle styling with check_flag=47 drop shadow and screenplay-grounded normalization
     """
+    outro_black_s = float(plan.get("outro_black_sec") or plan.get("append_black_outro_sec") or 0.0)
+    if outro_black_s > 0.05:
+        _ensure_outro_black_segment(draft, outro_black_s)
+
     video_segs = load_video_timeline(draft)
     cut_times = extract_fast_timeline_cuts(video_segs)
     film_duration_s = (
@@ -701,7 +981,7 @@ def apply_plan_to_draft(
         else round(float(draft.get("duration", 0)) / 1e6, 3)
     )
     sub_cues = extract_subtitles(draft)
-    sp_ctx = build_screenplay_subtitle_context(video_segs, sub_cues)
+    sp_ctx = build_screenplay_subtitle_context(video_segs, sub_cues, screenplay_path=screenplay_path)
 
     raw_style = dict(plan.get("style") or {})
     rec_style = sp_ctx.get("recommended_style") or {}
@@ -726,7 +1006,12 @@ def apply_plan_to_draft(
 
     preset: FilmCardStyle = resolve_style(raw_style)
     raw_cards: list[dict[str, Any]] = list(plan.get("cards") or [])
-    raw_cards.sort(key=lambda c: (float(c.get("start", 0.0)), str(c.get("kind", ""))))
+    raw_cards.sort(
+        key=lambda c: (
+            float(c.get("start", c.get("start_s", c.get("start_sec", 0.0)))),
+            str(c.get("kind", "")),
+        )
+    )
 
     # Warm up all unique fonts across preset, cards, and subtitles in parallel
     all_font_specs: list[str] = [
@@ -754,8 +1039,9 @@ def apply_plan_to_draft(
     for card in raw_cards:
         kind = str(card.get("kind") or card.get("type") or "char").lower()
         kind_norm = "char" if kind in ("character", "char") else ("end" if kind in ("end", "ending") else "time")
-        start_s = float(card.get("start", card.get("start_s", 0.0)))
-        end_s = float(card.get("end", card.get("end_s", start_s + 4.0)))
+        start_s = float(card.get("start", card.get("start_s", card.get("start_sec", 0.0))))
+        dur_hint = float(card.get("duration", card.get("duration_s", card.get("duration_sec", 4.0))))
+        end_s = float(card.get("end", card.get("end_s", card.get("end_sec", round(start_s + dur_hint, 3)))))
         if kind_norm == "end" and card.get("hold_to_end", False) and film_duration_s > start_s:
             end_s = film_duration_s
         if (
@@ -823,7 +1109,7 @@ def apply_plan_to_draft(
         title_text = str(card.get("title") or card.get("name") or card.get("main") or "").strip()
         raw_detail_text = str(card.get("detail") or card.get("role") or card.get("sub") or "").strip()
         if card.get("title_uppercase", preset.title_uppercase):
-            title_text = title_text.upper()
+            title_text = re.sub(r"\b(\d{2})S\b", r"\1s", title_text.upper())
         if card.get("detail_uppercase", preset.detail_uppercase):
             raw_detail_text = raw_detail_text.upper()
 
@@ -839,7 +1125,7 @@ def apply_plan_to_draft(
 
         flip_note: str | None = None
         req_anchor = str(card_for_pos.get("anchor") or "").strip().lower()
-        if need_mid_frames and (req_anchor in ("", "auto") or card_for_pos.get("auto_avoid_glare", True)):
+        if need_mid_frames and kind_norm != "end" and (req_anchor in ("", "auto") or card_for_pos.get("auto_avoid_glare", True)):
             mid_t = round((start_s + end_s) * 0.5, 2)
             f_p = tmp_fdir / f"mid_{idx:03d}_{int(round(mid_t*10)):06d}.jpg"
             ok, _ = extract_frame_at_timeline_sec(
@@ -850,17 +1136,38 @@ def apply_plan_to_draft(
                 zones = ns.get("zones", {})
                 if req_anchor in ("", "auto"):
                     card_for_pos["anchor"] = ns["best_anchor"]
-                elif card_for_pos.get("auto_avoid_glare", True) and req_anchor in ("lower-left", "lower-right") and zones:
-                    opp = "lower-right" if req_anchor == "lower-left" else "lower-left"
-                    z_cur = zones.get(req_anchor, {})
-                    z_opp = zones.get(opp, {})
-                    if z_cur.get("bright_ratio", 0.0) >= 0.22 or z_cur.get("p90_luma", 0.0) >= 195.0:
-                        if (
-                            z_opp.get("cost", 999.0) < z_cur.get("cost", 0.0) - 35.0
-                            and z_opp.get("p90_luma", 255.0) < 195.0
-                        ):
-                            card_for_pos["anchor"] = opp
-                            flip_note = f"#{idx:02d} {title_text}: {req_anchor}->{opp}"
+                elif card_for_pos.get("auto_avoid_glare", True) and zones:
+                    new_anc, reason = resolve_glare_safe_anchor(
+                        req_anchor, ns, is_scene_card=(kind_norm == "time")
+                    )
+                    if new_anc != req_anchor:
+                        card_for_pos["anchor"] = new_anc
+                        flip_note = f"#{idx:02d} {title_text}: {reason}"
+                final_anc = str(card_for_pos.get("anchor") or "").strip().lower()
+                canon_final = {
+                    "chest-left": "lower-left",
+                    "side-low-left": "lower-left",
+                    "chest-right": "lower-right",
+                    "side-low-right": "lower-right",
+                    "top-left": "upper-left",
+                    "corner-left": "upper-left",
+                    "top-right": "upper-right",
+                    "corner-right": "upper-right",
+                }.get(final_anc, final_anc)
+                if card_for_pos.get("daylight_contrast_guard", True) and canon_final in zones:
+                    t_style, d_style, boosted = apply_daylight_contrast_guard(
+                        t_style, d_style, zones[canon_final]
+                    )
+                    if boosted:
+                        card = dict(
+                            card,
+                            stroke_width=t_style.stroke_width,
+                            shadow_alpha=t_style.shadow_alpha,
+                            shadow_smoothing=t_style.shadow_smoothing,
+                            shadow_distance=t_style.shadow_distance,
+                        )
+                        if not flip_note:
+                            flip_note = f"#{idx:02d} {title_text}: daylight_contrast_guard(sw={t_style.stroke_width:.3f})"
 
         x_title, x_detail, y_main, y_detail, scale = resolve_card_position(
             card_for_pos,
@@ -1094,9 +1401,169 @@ def _to_editorial_title_case(s: str) -> str:
     return " ".join(out)
 
 
+def _translate_vi_time_of_day(par_text: str) -> str:
+    """Translate Vietnamese parenthetical time/continuity annotations into English."""
+    if not par_text:
+        return ""
+    s = par_text.strip()
+    if not _VI_DIACRITIC_RE.search(s):
+        return _to_editorial_title_case(s)
+    sl = s.lower()
+    days_map = [
+        ("thứ hai", "Monday"),
+        ("thứ ba", "Tuesday"),
+        ("thứ tư", "Wednesday"),
+        ("thứ năm", "Thursday"),
+        ("thứ sáu", "Friday"),
+        ("thứ bảy", "Saturday"),
+        ("chủ nhật", "Sunday"),
+    ]
+    day_en = ""
+    for vi_d, en_d in days_map:
+        if vi_d in sl:
+            day_en = en_d
+            break
+
+    clock_en = ""
+    m_clk = re.search(r"(\d{1,2}:\d{2})\s*(sáng|chiều|tối)?", sl)
+    if m_clk:
+        ampm = "PM" if m_clk.group(2) in ("chiều", "tối") else "AM"
+        clock_en = f"{m_clk.group(1)} {ampm}"
+    else:
+        m_hr = re.search(r"(\d{1,2})\s*giờ(?:\s*(sáng|trưa|chiều|tối|đêm))?", sl)
+        if m_hr:
+            hr = int(m_hr.group(1))
+            period = m_hr.group(2) or ""
+            ampm = "PM" if (period in ("trưa", "chiều", "tối", "đêm") or hr == 12) else "AM"
+            clock_en = f"{hr}:00 {ampm}"
+
+    tod_en = ""
+    if "rạng sáng" in sl or "rạng đông" in sl or "bình minh" in sl:
+        tod_en = "Dawn"
+    elif "sáng sớm" in sl:
+        tod_en = "Early Morning"
+    elif "sáng" in sl and not clock_en:
+        tod_en = "Morning"
+    elif "trưa" in sl and not clock_en:
+        tod_en = "Noon"
+    elif "chiều" in sl and not clock_en:
+        tod_en = "Afternoon"
+    elif ("tối" in sl or "đêm" in sl) and not clock_en:
+        tod_en = "Night"
+
+    extras: list[str] = []
+    if "sáu tuần sau" in sl or "6 tuần sau" in sl:
+        extras.append("Six Weeks Later")
+    elif "sáu tháng sau" in sl or "6 tháng sau" in sl:
+        extras.append("Six Months Later")
+    elif "ba tháng trước" in sl or "3 tháng trước" in sl:
+        extras.append("Three Months Earlier")
+    elif "mười năm trước" in sl or "10 năm trước" in sl:
+        extras.append("Ten Years Earlier")
+    elif "một năm sau" in sl or "1 năm sau" in sl:
+        extras.append("One Year Later")
+    elif "nhiều năm sau" in sl:
+        extras.append("Years Later")
+    elif "liền sau" in sl or "liền mạch" in sl or "ngay sau đó" in sl:
+        extras.append("Moments Later")
+
+    if "cắt song song" in sl:
+        extras.append("Intercut")
+    if "lễ động thổ" in sl:
+        extras.append("Groundbreaking")
+    if "hồi tưởng" in sl:
+        extras.append("Flashback")
+
+    pieces: list[str] = list(extras)
+    if day_en and clock_en:
+        pieces.append(f"{day_en}, {clock_en}")
+    elif day_en and tod_en:
+        pieces.append(f"{day_en} {tod_en}")
+    elif day_en:
+        pieces.append(day_en)
+    elif clock_en:
+        pieces.append(clock_en)
+    elif tod_en:
+        pieces.append(tod_en)
+    return " · ".join(pieces)
+
+
+def _translate_vi_location(loc_text: str, prompt: str = "") -> tuple[str, bool]:
+    """Translate Vietnamese scene location headings into clean English titles + (is_exterior)."""
+    raw = re.sub(r"^(?:SCENE|SC|S)\s*\d+(?:\s*→\s*S?\d+)?\s*[:.\-—–]?\s*", "", loc_text.strip(), flags=re.I)
+    raw = re.sub(r"\([^)]*\)", "", raw).strip(" —–-·:")
+    if not _VI_DIACRITIC_RE.search(raw):
+        return _to_editorial_title_case(raw), False
+
+    rl = raw.lower()
+    pl = (prompt or "").lower()
+    street_name = "Mulberry Street" if "mulberry" in (rl + " " + pl) else ""
+
+    m_num = re.search(r"nhà\s+số\s+(\d+)", rl)
+    house_prefix = f"{m_num.group(1)} {street_name}" if (m_num and street_name) else (f"House No. {m_num.group(1)}" if m_num else "")
+
+    if "cửa sau" in rl and house_prefix:
+        return f"{house_prefix} · Back Door", True
+    if "sân trước" in rl and house_prefix:
+        return f"{house_prefix} · Front Yard", True
+    if "sân sau" in rl and house_prefix:
+        return f"{house_prefix} · Backyard", True
+    if ("bậc thềm trước" in rl or "hiên trước" in rl or "hiên nhà" in rl) and house_prefix:
+        return f"{house_prefix} · Front Porch", True
+    if "bếp" in rl and house_prefix and "căn hộ" not in rl:
+        return f"{house_prefix} · Kitchen", False
+    if "gác mái" in rl and house_prefix:
+        return f"{house_prefix} · The Attic", False
+
+    m_board = re.search(r"phòng\s+họp\s+([A-Za-z0-9\s&'-]+)", raw, re.I)
+    if m_board:
+        return f"{m_board.group(1).strip()} Boardroom", False
+    if "phòng nhà đất" in rl or "bàn thanh tra" in rl:
+        return "City Housing Inspection Office", False
+    m_pent = re.search(r"penthouse\s+của\s+([A-Za-z]+)", raw, re.I)
+    if m_pent:
+        return f"{m_pent.group(1).strip()}'s Penthouse Study", False
+    m_soup = re.search(r"bếp\s+ăn\s+từ\s+thiện\s+([A-Za-z0-9\s&'-]+)", raw, re.I)
+    if m_soup:
+        return f"{m_soup.group(1).strip()} Soup Kitchen", False
+    m_apt_k = re.search(r"bếp\s+căn\s+hộ\s+của\s+([A-Za-z]+)", raw, re.I)
+    if m_apt_k:
+        return f"{m_apt_k.group(1).strip()}'s Apartment Kitchen", False
+    m_cont = re.search(r"container\s+văn\s+phòng\s+([A-Za-z0-9\s&'-]+)", raw, re.I)
+    if m_cont:
+        return f"{m_cont.group(1).strip()} Site Office Trailer", False
+    m_bus = re.search(r"trạm\s+xe\s+buýt.*phố\s+([A-Za-z0-9]+)", raw, re.I)
+    if m_bus:
+        return f"{m_bus.group(1).strip()} Street Bus Stop", True
+    m_curb = re.search(r"lề\s+đường\s+phố\s+([A-Za-z0-9]+)", raw, re.I)
+    if m_curb:
+        return f"{m_curb.group(1).strip()} Street Curbside", True
+    if "sân chuồng chợ đấu giá" in rl:
+        return "Auction Stable Yard", True
+    if "sân chuồng" in rl:
+        return "Stable Yard", True
+    if "phòng chờ cấp cứu" in rl:
+        return "Emergency Waiting Room", False
+    if "khu xe cứu thương" in rl:
+        return "Ambulance Bay", True
+
+    # Fallback: extract English location description from shot prompt (`IMGxx = the one location...: <desc>`)
+    m_loc = re.search(r"(?:IMG|BG)\w*\s*=\s*the one location[^:]*:\s*([^,|]+)", prompt or "", re.I)
+    if m_loc:
+        en_loc = m_loc.group(1).strip()
+        en_loc = re.sub(r"^(?:a|an|the)\s+(?:same\s+|sleek\s+|plain\s+|luxurious\s+|dark\s+|modest\s+|cramped\s+|warm\s+|freshly\s+|repaired\s+|old\s+|sagging\s+|pale-green\s+|wood-frame\s+|bare-wood\s+|muddy\s+)*", "", en_loc, flags=re.I)
+        en_loc = re.sub(r"\s+(?:in the morning|in the afternoon|in the late morning|at night|at dawn|at gray dawn|at noon.*|on a saturday.*|six weeks later.*|lit only.*)$", "", en_loc, flags=re.I)
+        if en_loc:
+            is_ext_guess = any(k in en_loc.lower() for k in ("yard", "street", "porch", "bus stop", "curb", "outside", "park"))
+            return _to_editorial_title_case(en_loc[:38].strip()), is_ext_guess
+
+    cleaned = _strip_vietnamese_clauses(raw)
+    return (_to_editorial_title_case(cleaned) if cleaned else ""), False
+
+
 def _clean_scene_title_and_detail(sname: str, prompt: str = "", idx: int = 1) -> tuple[str, str]:
     raw = (sname or f"Scene {idx}").strip()
-    raw = re.sub(r"^(?:SCENE|SC|S)\s*\d+\s*[:.\-—–]?\s*", "", raw, flags=re.I)
+    raw = re.sub(r"^(?:SCENE|SC|S)\s*\d+(?:\s*→\s*S?\d+)?\s*[:.\-—–]?\s*", "", raw, flags=re.I)
     ie_match = re.search(r"\b(INT\./EXT\.|EXT\./INT\.|INT\.|EXT\.)\s*", raw, flags=re.I)
     is_ext = bool(ie_match and "EXT" in ie_match.group(1).upper())
     raw = re.sub(r"\b(?:INT\./EXT\.|EXT\./INT\.|INT\.|EXT\.)\s*", "", raw, flags=re.I)
@@ -1104,11 +1571,19 @@ def _clean_scene_title_and_detail(sname: str, prompt: str = "", idx: int = 1) ->
     tod = ""
     for m_par in re.finditer(r"\(([^)]+)\)", raw):
         inner = m_par.group(1).strip()
-        if not _VI_DIACRITIC_RE.search(inner):
-            tod = _to_editorial_title_case(inner)
-    raw = re.sub(r"\([^)]*\)", "", raw).strip()
-    cleaned = _strip_vietnamese_clauses(raw)
-    title = _to_editorial_title_case(cleaned) if cleaned else f"Scene {idx}"
+        cand_tod = _translate_vi_time_of_day(inner)
+        if cand_tod:
+            tod = cand_tod
+    raw_no_par = re.sub(r"\([^)]*\)", "", raw).strip()
+    if _VI_DIACRITIC_RE.search(raw_no_par):
+        title, ext_from_vi = _translate_vi_location(raw_no_par, prompt)
+        is_ext = is_ext or ext_from_vi
+        if not title:
+            title = f"Scene {idx}"
+    else:
+        cleaned = _strip_vietnamese_clauses(raw_no_par)
+        title = _to_editorial_title_case(cleaned) if cleaned else f"Scene {idx}"
+
     # Truncate overly long multi-part scene titles to 2 clauses max
     clauses = [c.strip() for c in title.split("·") if c.strip()]
     if len(clauses) > 2:
@@ -1126,30 +1601,98 @@ def _clean_scene_title_and_detail(sname: str, prompt: str = "", idx: int = 1) ->
             tod = "Late Afternoon"
         else:
             tod = "Daylight"
-    setting_kind = clauses[1] if len(clauses) > 1 and clauses[1] not in title else ("Exterior Grounds" if is_ext else "Interior")
-    detail = f"{tod} · {setting_kind}" if setting_kind and setting_kind.lower() != tod.lower() else tod
+    setting_kind = clauses[1] if len(clauses) > 1 and clauses[1] not in title else ("Exterior" if is_ext else "Interior")
+    if "·" in tod:
+        detail = tod
+    else:
+        detail = f"{tod} · {setting_kind}" if setting_kind and setting_kind.lower() != tod.lower() else tod
     return title, detail
+
+
+_VI_CHAR_NAME_MAP: list[tuple[str, str]] = [
+    ("tình nguyện viên nhà thờ", "Church Volunteer"),
+    ("tình nguyện viên", "Volunteer"),
+    ("thợ lái máy ủi", "Dozer Operator"),
+    ("bảo vệ", "Security Guard"),
+    ("y tá trưởng", "Head Nurse"),
+    ("bác sĩ", "Doctor"),
+]
+
+_VI_CHAR_ROLE_MAP: list[tuple[str, str]] = [
+    ("tỉ phú bất động sản", "Billionaire Real Estate CEO"),
+    ("quản lý công trường", "Demolition Site Manager"),
+    ("thanh tra nhà đất thành phố", "City Housing Inspector"),
+    ("thanh tra nhà đất", "Housing Inspector"),
+    ("tình nguyện viên bếp ăn từ thiện grace chapel", "Grace Chapel Soup Kitchen"),
+    ("tình nguyện viên bếp ăn từ thiện", "Soup Kitchen Volunteer"),
+    ("thợ lái máy ủi của haskins demolition", "Heavy Equipment · Haskins Demolition"),
+    ("thợ lái máy ủi", "Heavy Equipment Operator"),
+    ("mẹ terrell", "Terrell's Mother"),
+    ("cha terrell", "Terrell's Father"),
+    ("bác sĩ thú y", "Veterinarian"),
+    ("bác sĩ cấp cứu", "Emergency Physician"),
+    ("y tá trưởng ca", "Head ER Nurse"),
+    ("trưởng ban giám khảo", "Head Judge"),
+    ("bà đầu bếp nướng thịt", "Master Pitmaster"),
+    ("chú rể", "The Groom"),
+    ("cô dâu", "The Bride"),
+    ("mẹ chú rể", "Mother of the Groom"),
+    ("mẹ cô dâu", "Mother of the Bride"),
+]
 
 
 def _clean_char_title_and_detail(label: str, desc: str = "") -> tuple[str, str]:
     raw_lbl = (label or "").strip()
-    age_str = ""
-    m_age = re.search(r"\((\d{1,2})\)|\b(\d{1,2})\s*(?:yo|years?\s*old|tuổi)\b", raw_lbl + " " + (desc or ""), re.I)
-    if m_age:
-        age_str = m_age.group(1) or m_age.group(2)
+    # Strip leading CHAR1a / AL1 / ★ prefix BEFORE splitting on dashes
+    raw_lbl = re.sub(r"^(?:★\s*)?(?:CHAR|AL)\d+[A-Za-z]*\s*[—–\-:.]?\s*", "", raw_lbl, flags=re.I).strip()
 
-    parts = [p.strip() for p in re.split(r"\s*[—–\-]\s*", raw_lbl) if p.strip()]
+    age_str = ""
+    m_age = re.search(
+        r"\((\d{1,2}s?)\)|\b(\d{1,2})\s*(?:yo|years?\s*old|tuổi)\b|ngoài\s+(\d{2})",
+        raw_lbl + " " + (desc or ""),
+        re.I,
+    )
+    if m_age:
+        age_str = m_age.group(1) or m_age.group(2) or (f"{m_age.group(3)}s" if m_age.group(3) else "")
+
+    parts = [p.strip() for p in re.split(r"\s*[—–·]\s*", raw_lbl) if p.strip()]
     name_part = re.sub(r"\([^)]*\)", "", parts[0] if parts else raw_lbl).strip()
-    name_part = re.sub(r"^(?:CHAR|AL)\d+[A-Za-z]*\s*[:.]?\s*", "", name_part, flags=re.I).strip()
-    name_tc = _to_editorial_title_case(name_part)
+    name_part = re.sub(r"^(?:CHAR|AL)\d+[A-Za-z]*\s*[:.\-—–]?\s*", "", name_part, flags=re.I).strip()
+
+    if _VI_DIACRITIC_RE.search(name_part):
+        nl = name_part.lower()
+        translated_name = ""
+        for vi_k, en_v in _VI_CHAR_NAME_MAP:
+            if vi_k in nl:
+                translated_name = en_v
+                break
+        name_tc = translated_name or "Featured Character"
+    else:
+        name_tc = _to_editorial_title_case(name_part)
+
     title = f"{name_tc}, {age_str}" if (age_str and age_str not in name_tc) else name_tc
 
-    role_candidates = [p for p in parts[1:] if not _VI_DIACRITIC_RE.search(p)]
+    role_candidates = [
+        p for p in parts[1:]
+        if not _VI_DIACRITIC_RE.search(p)
+        and not re.match(r"^\d+\s*tuổi$", p, re.I)
+        and p.lower() != name_part.lower()
+    ]
     role = _to_editorial_title_case(" · ".join(role_candidates[:2])) if role_candidates else ""
     if not role and desc:
         first_line = desc.splitlines()[0]
         if not _VI_DIACRITIC_RE.search(first_line):
             role = _to_editorial_title_case(first_line[:42].strip(" ,.;—-"))
+        else:
+            blob_l = (raw_lbl + " " + first_line).lower()
+            for vi_rk, en_rv in _VI_CHAR_ROLE_MAP:
+                if vi_rk in blob_l:
+                    role = en_rv
+                    break
+            if role and "freeman development" in blob_l and "Freeman" not in role:
+                role = f"{role} · Freeman Development"
+            elif role and "haskins demolition" in blob_l and "Haskins" not in role:
+                role = f"{role} · Haskins Demolition"
     if not role:
         role = "Featured Character"
     return title, role
@@ -1158,7 +1701,15 @@ def _clean_char_title_and_detail(label: str, desc: str = "") -> tuple[str, str]:
 def _locate_sf_board_path(
     video_segs: list[VideoSegment],
     subs: list[dict[str, Any]] | None = None,
+    screenplay_path: str | Path | None = None,
 ) -> Path | None:
+    if screenplay_path:
+        sp_cand = Path(os.path.expanduser(str(screenplay_path)))
+        if sp_cand.is_dir() and (sp_cand / "sf-board.json").exists():
+            return (sp_cand / "sf-board.json").resolve()
+        if sp_cand.is_file() and sp_cand.exists():
+            return sp_cand.resolve()
+
     for seg in video_segs:
         if not seg.path:
             continue
@@ -1177,8 +1728,10 @@ def _locate_sf_board_path(
                 Path.cwd(),
                 Path(__file__).resolve().parents[4],
                 Path.home() / "Documents" / "SF Board",
+                Path.home() / "Long",
                 Path.home() / "Documents",
                 Path.home() / "Desktop",
+                Path.home() / "Downloads",
             ):
                 if r_cand.exists() and r_cand not in search_roots:
                     search_roots.append(r_cand)
@@ -1205,37 +1758,235 @@ def _locate_sf_board_path(
     return None
 
 
+def _detect_cold_open_hook_end_s(video_segs: list[VideoSegment]) -> float:
+    """
+    Detect if the timeline starts with a Cold-Open Hook teaser (e.g. V-021..V-023 from S9 placed at 0.0-58.1s
+    before chronological clip V-001 / V-S1 at 58.1s). Returns the timeline timestamp where V-001 begins.
+    """
+    if not video_segs:
+        return 0.0
+    for idx_s, seg in enumerate(video_segs[:25]):
+        stem = Path(seg.clip_name).stem
+        m_sc = re.match(r"^V-S(\d+)", stem, re.I)
+        m_v1 = re.match(r"^(?:V-?0*1|0*1)$", stem, re.I)
+        is_first_chron = (m_sc and int(m_sc.group(1)) <= 2) or bool(m_v1)
+        if not is_first_chron:
+            continue
+        if idx_s == 0:
+            return 0.0
+        # Verify that preceding segments are later clips (clip num >= 3) or appear again later on the timeline
+        later_stems = {Path(s.clip_name).stem for s in video_segs[idx_s + 1 :]}
+        prev_are_hook = True
+        for prev_seg in video_segs[:idx_s]:
+            p_stem = Path(prev_seg.clip_name).stem
+            m_pnum = re.search(r"(\d+)$", p_stem)
+            if p_stem in later_stems or (m_pnum and int(m_pnum.group(1)) >= 3):
+                continue
+            prev_are_hook = False
+            break
+        if prev_are_hook:
+            return round(seg.timeline_start_s, 3)
+        return 0.0
+    return 0.0
+
+
+def _expand_dung_clip_ids(desc_text: str, clip_ranges: dict[str, tuple[float, float]]) -> list[str]:
+    """
+    Parse Vietnamese `Dùng: 001–005 · 018–032 · 045` clip usage lines inside `scenes[0].sfs[].desc`
+    and return matching clip IDs present in `clip_ranges`.
+    """
+    if not desc_text or not clip_ranges:
+        return []
+    m_dung = re.search(r"(?:Dùng|Dung|Used\s*in)\s*:\s*([^\n(]+)", desc_text, re.I)
+    if not m_dung:
+        return []
+    spec = m_dung.group(1)
+    nums: list[int] = []
+    for m_rng in re.finditer(r"(\d{1,4})\s*[–—\-]\s*(\d{1,4})", spec):
+        a, b = int(m_rng.group(1)), int(m_rng.group(2))
+        if 0 < a <= b and (b - a) <= 200:
+            nums.extend(range(a, b + 1))
+    spec_no_rng = re.sub(r"\d{1,4}\s*[–—\-]\s*\d{1,4}", " ", spec)
+    for m_single in re.finditer(r"\b(\d{1,4})\b", spec_no_rng):
+        nums.append(int(m_single.group(1)))
+
+    matched: list[str] = []
+    for n in nums:
+        for cand in (f"V-{n:03d}", f"V-{n:02d}", f"V-{n}", f"{n:03d}", f"{n}"):
+            if cand in clip_ranges and cand not in matched:
+                matched.append(cand)
+                break
+    return matched
+
+
+_TURN_STOP_WORDS: set[str] = {
+    "the", "and", "you", "your", "for", "not", "are", "was", "this", "that",
+    "with", "have", "from", "what", "who", "how", "yes", "yeah", "sir", "ma'am",
+    "they", "them", "their", "his", "her", "him", "she", "all", "one", "out",
+}
+
+
+def _align_speaker_turns_with_subtitles(
+    dialogue_text: str,
+    clip_lo: float,
+    clip_hi: float,
+    subs: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """
+    Split `sh['text']` into `(SPEAKER, line)` turns and align each turn monotonically to contiguous
+    CapCut subtitle `[start_s, end_s]` intervals inside `[clip_lo, clip_hi]`.
+    """
+    if not dialogue_text:
+        return []
+    matches = list(re.finditer(r"(?:^|\n|\s)([A-Z][A-Z0-9_\s'/&-]{1,22}):\s*", dialogue_text))
+    if not matches:
+        return []
+    raw_turns: list[tuple[str, str]] = []
+    for i, m in enumerate(matches):
+        spk = m.group(1).strip()
+        if spk.upper() in ("REF", "SCENE", "SHOT", "VO", "SFX", "BGM", "NOTE", "NOTES"):
+            continue
+        start_pos = m.end()
+        end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(dialogue_text)
+        line = " ".join(dialogue_text[start_pos:end_pos].split()).strip()
+        if line:
+            raw_turns.append((spk, line))
+    if not raw_turns:
+        return []
+
+    local_subs = [
+        c
+        for c in (subs or [])
+        if float(c.get("end_s", 0.0)) >= clip_lo - 0.6 and float(c.get("start_s", 0.0)) <= clip_hi + 0.6
+    ]
+    turns_out: list[dict[str, Any]] = []
+    search_start_idx = 0
+
+    for idx_t, (spk, line) in enumerate(raw_turns):
+        lw = _norm_words(line)
+        lw_content = lw - _TURN_STOP_WORDS
+        matched_cues: list[dict[str, Any]] = []
+        last_matched_idx = -1
+        if local_subs and lw:
+            for c_i in range(search_start_idx, len(local_subs)):
+                cue = local_subs[c_i]
+                cue_txt = str(cue.get("text") or "")
+                cw = _norm_words(cue_txt)
+                if not cw:
+                    continue
+                cw_content = cw - _TURN_STOP_WORDS
+                sim = difflib.SequenceMatcher(None, line.lower(), cue_txt.lower()).ratio()
+                if not matched_cues:
+                    # Guard against jumping far ahead over remaining turns unless match is strong
+                    ahead_gap = c_i - search_start_idx
+                    rem_turns = len(raw_turns) - idx_t - 1
+                    if rem_turns > 0 and ahead_gap > max(2, len(local_subs) - search_start_idx - rem_turns):
+                        break
+                    ov_c = len(lw_content & cw_content)
+                    is_match = (
+                        (lw_content and ov_c >= max(1, min(2, len(lw_content))))
+                        or (not lw_content and len(lw & cw) >= len(lw))
+                        or sim >= 0.48
+                    )
+                    if ahead_gap >= 3 and not (ov_c >= 2 or sim >= 0.56):
+                        is_match = False
+                    if is_match:
+                        matched_cues.append(cue)
+                        last_matched_idx = c_i
+                        if sum(len(str(mc.get("text") or "")) for mc in matched_cues) >= len(line) * 0.72:
+                            break
+                else:
+                    # Extension across multiple cues MUST be strictly contiguous in index and time
+                    if (
+                        c_i != last_matched_idx + 1
+                        or float(cue.get("start_s", 0.0)) - float(matched_cues[-1].get("end_s", 0.0)) > 1.8
+                    ):
+                        break
+                    ov_ext = len(lw_content & cw_content) if cw_content else len(lw & cw)
+                    if ov_ext >= 1 or sim >= 0.42:
+                        matched_cues.append(cue)
+                        last_matched_idx = c_i
+                        if sum(len(str(mc.get("text") or "")) for mc in matched_cues) >= len(line) * 0.72:
+                            break
+                    else:
+                        break
+
+        if matched_cues:
+            search_start_idx = last_matched_idx + 1
+            t_lo: float | None = round(float(matched_cues[0]["start_s"]), 2)
+            t_hi: float | None = round(float(matched_cues[-1]["end_s"]), 2)
+        else:
+            t_lo = None
+            t_hi = None
+        turns_out.append(
+            {
+                "speaker": spk,
+                "start_s": t_lo,
+                "end_s": t_hi,
+                "text": line[:140],
+            }
+        )
+
+    # Pass 2: Monotonically interpolate any unmatched turns between surrounding matched bounds
+    n_turns = len(turns_out)
+    idx = 0
+    while idx < n_turns:
+        if turns_out[idx]["start_s"] is not None:
+            idx += 1
+            continue
+        run_end = idx
+        while run_end < n_turns and turns_out[run_end]["start_s"] is None:
+            run_end += 1
+        lo_bound = float(turns_out[idx - 1]["end_s"]) + 0.10 if idx > 0 else clip_lo
+        hi_bound = float(turns_out[run_end]["start_s"]) - 0.10 if run_end < n_turns else clip_hi
+        if hi_bound <= lo_bound + 0.4:
+            hi_bound = max(lo_bound + 1.2 * (run_end - idx), min(clip_hi, lo_bound + 2.5))
+        run_cnt = run_end - idx
+        step = (hi_bound - lo_bound) / max(1, run_cnt)
+        for k in range(run_cnt):
+            s_t = round(lo_bound + k * step, 2)
+            e_t = round(min(hi_bound, s_t + max(1.0, step - 0.12)), 2)
+            if e_t <= s_t:
+                e_t = round(s_t + 1.0, 2)
+            turns_out[idx + k]["start_s"] = s_t
+            turns_out[idx + k]["end_s"] = e_t
+        idx = run_end
+
+    return turns_out
+
+
 def extract_screenplay_ground_truth(
-    video_segs: list[VideoSegment],
-    subs: list[dict[str, Any]] | None = None,
+    video_segs_or_sf: list[VideoSegment] | dict[str, Any],
+    subs_or_vsegs: list[dict[str, Any]] | list[VideoSegment] | None = None,
+    *,
+    screenplay_path: str | Path | None = None,
+    subtitles: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
-    Automatically locate `sf-board.json` from video segment paths (or by matching subtitle dialogue
-    against workspace `.project/sf-board.json` files when the video is a single flat export), and map
-    story scenes (`S01..SNN`) and character appearances (`CHAR1..CHARN`, `AL1..ALN`) to exact edited
-    CapCut timeline timestamps, accounting for trimmed/split segments (`source_timerange`).
+    Automatically locate `sf-board.json` from video segment paths (or accept `sf_data` dict directly),
+    detect any Cold-Open Hook teaser (`hook_window_s`), and map story scenes (`S01..SNN`),
+    character appearances (`CHAR1..CHARN`, `AL1..ALN`, `all_scene_appearances`), and speaker-aligned
+    subtitle turns (`speaker_turns`) to exact edited CapCut timeline timestamps.
     """
-    sf_board_path = _locate_sf_board_path(video_segs, subs)
-    if not sf_board_path:
-        return {}
+    if isinstance(video_segs_or_sf, dict):
+        sb = video_segs_or_sf
+        video_segs = list(subs_or_vsegs or [])  # type: ignore[arg-type]
+        subs = subtitles
+        sf_board_path = Path(str(screenplay_path)) if screenplay_path else Path("/tmp/sf-board.json")
+    else:
+        video_segs = list(video_segs_or_sf or [])
+        subs = subtitles if subtitles is not None else (subs_or_vsegs if isinstance(subs_or_vsegs, list) else None)  # type: ignore[assignment]
+        sf_board_path = _locate_sf_board_path(video_segs, subs, screenplay_path=screenplay_path)
+        if not sf_board_path:
+            return {}
+        try:
+            with sf_board_path.open("r", encoding="utf-8") as fh:
+                sb = json.load(fh)
+        except Exception:
+            return {}
 
-    try:
-        with sf_board_path.open("r", encoding="utf-8") as fh:
-            sb = json.load(fh)
-    except Exception:
-        return {}
-
-    # Detect cold-open hook at the beginning of the timeline (e.g. S7 clips placed before S1/S2)
-    hook_end_s = 0.0
-    if video_segs:
-        first_chron_idx = None
-        for idx_s, seg in enumerate(video_segs[:25]):
-            m_sc = re.match(r"^V-S(\d+)", seg.clip_name, re.I)
-            if m_sc and int(m_sc.group(1)) <= 2:
-                first_chron_idx = idx_s
-                break
-        if first_chron_idx and first_chron_idx > 0:
-            hook_end_s = video_segs[first_chron_idx].timeline_start_s
+    hook_end_s = _detect_cold_open_hook_end_s(video_segs)
+    hook_window_s = [0.0, hook_end_s] if hook_end_s > 0.0 else None
 
     clip_segs: dict[str, list[VideoSegment]] = {}
     clip_ranges: dict[str, tuple[float, float]] = {}
@@ -1288,7 +2039,6 @@ def extract_screenplay_ground_truth(
             if cid:
                 raw_goc = sh.get("goc", "")
                 mapped_goc = _map_shot_breakdown_to_timeline(raw_goc, clip_segs.get(cid, []))
-                # Strip repetitive Seedance boilerplate prefix while preserving all shot breakdown details
                 clean_goc = re.sub(
                     r"^Scene\s+\d+\s*:.*?widescreen\s+16:9\s+frame\.?\s*",
                     "",
@@ -1300,6 +2050,10 @@ def extract_screenplay_ground_truth(
                     f"TL {s.timeline_start_s:.2f}-{s.timeline_end_s:.2f}s (src {s.source_start_s:.1f}-{s.source_start_s + s.source_dur_s:.1f}s)"
                     for s in clip_segs.get(cid, [])
                 )
+                c_lo_hi = clip_ranges.get(cid, (0.0, 0.0))
+                spk_turns = _align_speaker_turns_with_subtitles(
+                    str(sh.get("text") or ""), c_lo_hi[0], c_lo_hi[1], subs
+                )
                 clip_info[cid] = {
                     "scene_id": sid,
                     "scene_name": sname,
@@ -1310,6 +2064,7 @@ def extract_screenplay_ground_truth(
                     "dialogue": " ".join((sh.get("text") or "").split()),
                     "shot_breakdown": clean_goc,
                     "kept_segments": kept_slices_str,
+                    "speaker_turns": spk_turns,
                 }
         if sc_clips:
             first_c = sc_clips[0]
@@ -1328,6 +2083,8 @@ def extract_screenplay_ground_truth(
                     "first_clip_window_s": f"{fc_lo:.2f}-{fc_hi:.2f}s",
                     "first_clip_kept_segments": fc_info.get("kept_segments", ""),
                     "first_clip_shots": fc_info.get("shot_breakdown", ""),
+                    "first_clip_prompt": fc_info.get("prompt", ""),
+                    "first_clip_speaker_turns": fc_info.get("speaker_turns", []),
                 }
             )
             w_lo = int(max(0.0, s_start))
@@ -1346,32 +2103,50 @@ def extract_screenplay_ground_truth(
             base_id = m_named.group(1)
         else:
             continue
-        # Only include clips that survive on the timeline with >= 1.2s duration
-        used = [
+
+        # 1. Start with explicit usedBy
+        used: list[str] = [
             c for c in (ref.get("usedBy") or [])
             if c in clip_ranges and (clip_ranges[c][1] - clip_ranges[c][0]) >= 1.2
         ]
-        if not used and m_named:
-            char_token = m_named.group(1)
-            for cid, ci in clip_info.items():
-                if cid not in clip_ranges or (clip_ranges[cid][1] - clip_ranges[cid][0]) < 1.2:
-                    continue
-                sf_refs = sf_char_refs.get(ci.get("sf", ""), [])
-                if rid in sf_refs or any(r.startswith(f"REF_{char_token}_") for r in sf_refs):
-                    used.append(cid)
-                elif re.search(rf"\b{re.escape(char_token)}\b", ci.get("raw_goc", "") + "\n" + ci.get("prompt", "")):
-                    used.append(cid)
-        lbl_str = ref.get("label") or ""
-        desc_str = (ref.get("desc") or "").splitlines()[0]
-        full_label = f"{lbl_str} — {desc_str}".strip(" —") if (lbl_str or desc_str) else rid
+        # 2. Expand Vietnamese `Dùng: 001–005 · 018–032` in ref["desc"]
+        for c_dung in _expand_dung_clip_ids(str(ref.get("desc") or ""), clip_ranges):
+            if c_dung not in used and (clip_ranges[c_dung][1] - clip_ranges[c_dung][0]) >= 1.2:
+                used.append(c_dung)
+        # 3. Scan clip_info (sf_char_refs, notes, prompt, raw_goc) for exact ref ID (`CHAR1a`, `CHAR1b`, `REF_WES_1`)
+        rid_pat = re.compile(rf"\b{re.escape(rid)}\b", re.I)
+        base_pat = re.compile(rf"\b{re.escape(base_id)}[a-z]?\b", re.I)
+        for cid, ci in clip_info.items():
+            if cid in used or cid not in clip_ranges or (clip_ranges[cid][1] - clip_ranges[cid][0]) < 1.2:
+                continue
+            sf_refs = sf_char_refs.get(ci.get("sf", ""), [])
+            blob = f"{ci.get('notes', '')}\n{ci.get('prompt', '')}\n{ci.get('raw_goc', '')}"
+            if rid in sf_refs or rid_pat.search(blob):
+                used.append(cid)
+            elif m_named and any(r.startswith(f"REF_{base_id}_") for r in sf_refs):
+                used.append(cid)
+            elif not used and base_pat.search(blob):
+                used.append(cid)
+
+        lbl_str = str(ref.get("label") or "").strip()
+        raw_desc = str(ref.get("desc") or "").strip()
+        desc_first = raw_desc.splitlines()[0].strip() if raw_desc else ""
+        full_label = f"{lbl_str} — {desc_first}".strip(" —") if (lbl_str or desc_first) else rid
         entry = char_groups.setdefault(
             base_id,
             {
                 "id": base_id,
                 "label": full_label,
+                "raw_label": lbl_str,
+                "desc": raw_desc,
                 "clips": [],
             },
         )
+        # Prefer the primary `a` variant's full description if available
+        if rid.lower().endswith("a") and raw_desc:
+            entry["label"] = full_label
+            entry["raw_label"] = lbl_str
+            entry["desc"] = raw_desc
         for c in used:
             if c not in entry["clips"]:
                 entry["clips"].append(c)
@@ -1381,33 +2156,82 @@ def extract_screenplay_ground_truth(
         clips_sorted = sorted(info["clips"], key=lambda c: clip_ranges[c][0])
         if not clips_sorted:
             continue
+
+        # Extract character name tokens (including aliases separated by `/` and translated Vietnamese roles) to filter speaker_turns
+        raw_head = info["raw_label"].split("—")[-1] if info["raw_label"].upper().startswith(base_id) else info["raw_label"].split("—")[0]
+        raw_head = raw_head.split("·")[0].split("(")[0].strip()
+        en_title_guess, _ = _clean_char_title_and_detail(info["label"], info["desc"])
+        name_tokens = {
+            w.lower()
+            for w in re.findall(r"[A-Za-z]{3,}", raw_head + " " + info["label"].split("—")[0] + " " + en_title_guess)
+            if w.lower() not in {"char", "tuổi", "nam", "nữ", "featured", "character"}
+        }
+
         first_clips = []
+        char_speaker_turns: list[dict[str, Any]] = []
         for idx_c_clip, c in enumerate(clips_sorted[:2]):
             c_lo, c_hi = clip_ranges[c]
             ci = clip_info.get(c, {})
             first_clips.append(
                 {
                     "clip": c,
+                    "scene_id": ci.get("scene_id", ""),
                     "window_s": f"{c_lo:.2f}-{c_hi:.2f}s",
                     "kept_segments": ci.get("kept_segments", ""),
                     "notes": ci.get("notes", ""),
                     "dialogue": ci.get("dialogue", ""),
                     "shot_breakdown": ci.get("shot_breakdown", ""),
+                    "prompt": ci.get("prompt", ""),
+                    "speaker_turns": ci.get("speaker_turns", []),
                 }
             )
             if idx_c_clip == 0:
                 probe_windows.append(f"{int(c_lo)}-{int(min(c_hi, c_lo + 14.0)) + 1}")
+
+        # Build `all_scene_appearances` across the entire film for this character
+        all_scene_apps: list[dict[str, Any]] = []
+        seen_scenes: dict[str, dict[str, Any]] = {}
+        for c in clips_sorted:
+            c_lo, c_hi = clip_ranges[c]
+            ci = clip_info.get(c, {})
+            sid = ci.get("scene_id") or "S?"
+            for st_turn in ci.get("speaker_turns", []):
+                spk_words = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", st_turn["speaker"])}
+                if (name_tokens & spk_words) and len(char_speaker_turns) < 8:
+                    char_speaker_turns.append({**st_turn, "clip": c, "scene_id": sid})
+            if sid not in seen_scenes:
+                sc_entry = {
+                    "scene_id": sid,
+                    "scene_name": ci.get("scene_name", sid),
+                    "first_clip_id": c,
+                    "start_s": c_lo,
+                    "end_s": c_hi,
+                    "clip_count": 1,
+                    "shot_breakdown": ci.get("shot_breakdown", ""),
+                    "dialogue": ci.get("dialogue", "")[:160],
+                }
+                seen_scenes[sid] = sc_entry
+                all_scene_apps.append(sc_entry)
+            else:
+                seen_scenes[sid]["end_s"] = max(seen_scenes[sid]["end_s"], c_hi)
+                seen_scenes[sid]["clip_count"] += 1
+
+        first_s = clip_ranges[clips_sorted[0]][0]
         char_appearances.append(
             {
                 "character_id": base_id,
+                "char_group": base_id,
                 "label": info["label"],
-                "first_appearance_s": clip_ranges[clips_sorted[0]][0],
+                "desc": info["desc"],
+                "first_appearance_s": first_s,
+                "first_timeline_s": first_s,
+                "speaker_turns": char_speaker_turns,
                 "first_clips": first_clips,
+                "all_scene_appearances": all_scene_apps,
             }
         )
 
     char_appearances.sort(key=lambda x: x["first_appearance_s"])
-    # Merge overlapping probe windows (keeping each merged window <= 24s so dead gaps aren't probed)
     parsed_wins: list[tuple[int, int]] = []
     for pw in probe_windows:
         if "-" in pw:
@@ -1428,10 +2252,14 @@ def extract_screenplay_ground_truth(
     rec_style = recommend_style_for_screenplay(sb, str(sf_board_path.parent.name))
     return {
         "screenplay_source": str(sf_board_path),
+        "hook_window_s": hook_window_s,
+        "scene_count": len(story_scenes),
+        "character_count": len(char_appearances),
         "recommended_style": rec_style,
         "story_scenes": story_scenes,
         "character_appearances": char_appearances,
         "recommended_probe_windows": ",".join(f"{a}-{b}" for a, b in merged_wins),
+        "_clip_info": clip_info,
     }
 
 
@@ -1480,6 +2308,46 @@ def recommend_style_for_screenplay(sb: dict[str, Any], project_name: str = "") -
     corpus = " ".join(text_chunks).lower()
 
     archetypes: list[tuple[str, set[str], dict[str, Any]]] = [
+        (
+            "philanthropic_real_estate_heritage",
+            {"mulberry", "ebony rise", "bulldozer", "bulldoze", "childhood home", "vance holdings", "freeman development", "haskins demolition", "philanthrop", "community land trust", "historic preservation", "deed"},
+            {
+                "archetype": "philanthropic_real_estate_heritage",
+                "title_font": "Cinzel-Bold",
+                "detail_font": "CormorantGaramond-BoldItalic",
+                "scene_title_font": "PlayfairDisplay-Bold",
+                "scene_detail_font": "CormorantGaramond-BoldItalic",
+                "end_title_font": "Cinzel-Bold",
+                "end_detail_font": "CormorantGaramond-BoldItalic",
+                "title_size": 6.8,
+                "detail_size": 5.0,
+                "scene_title_size": 6.6,
+                "scene_detail_size": 5.0,
+                "end_title_size": 8.2,
+                "end_detail_size": 5.1,
+                "detail_uppercase": False,
+                "char_title_color": "#F0C76E",
+                "char_detail_color": "#F7F1E5",
+                "detail_accent_color": "#E8B954",
+                "time_title_color": "#FBF6EC",
+                "time_detail_color": "#EDE0C8",
+                "scene_accent_color": "#F0C76E",
+                "flanker_color": "#D4A856",
+                "stroke_color": "#0A0C10",
+                "stroke_width": 0.022,
+                "shadow_color": "#05070A",
+                "shadow_alpha": 0.92,
+                "shadow_smoothing": 0.36,
+                "shadow_distance": 2.4,
+                "flankers": "—",
+                "scene_flankers": "·",
+                "stagger_sec": 0.10,
+                "align": "center",
+                "order": "title-first",
+                "scene_order": "detail-first",
+                "line_gap": 0.16,
+            },
+        ),
         (
             "coastal_lifeguard_rescue",
             {"lifeguard", "beach", "ocean", "surf", "shoreline", "pier", "bay", "tide", "coral", "marina", "boathouse", "jetty", "coast"},
@@ -1774,6 +2642,8 @@ def recommend_style_for_screenplay(sb: dict[str, Any], project_name: str = "") -
 def build_screenplay_subtitle_context(
     video_segs: list[VideoSegment],
     subs: list[dict[str, Any]] | None = None,
+    *,
+    screenplay_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """
     Build a screenplay-grounded normalization context from `sf-board.json` (and any `*KICHBAN*.txt`
@@ -1784,7 +2654,7 @@ def build_screenplay_subtitle_context(
     - `canonical_phrases`: compiled regexes for numbered clauses (`Clause 9`, `Stall 9`) and multi-word proper names (`Coral Reach`)
     - `recommended_style`: world-matched Cinema Art-Direction Style
     """
-    sf_board_path = _locate_sf_board_path(video_segs, subs)
+    sf_board_path = _locate_sf_board_path(video_segs, subs, screenplay_path=screenplay_path)
     if not sf_board_path:
         return {}
 
@@ -1793,8 +2663,11 @@ def build_screenplay_subtitle_context(
     except Exception:
         return {}
 
+    hook_end_s = _detect_cold_open_hook_end_s(video_segs)
     clip_ranges: dict[str, list[tuple[float, float]]] = {}
     for seg in video_segs:
+        if hook_end_s > 0.0 and seg.timeline_end_s <= hook_end_s + 0.05:
+            continue
         cid = Path(seg.clip_name).stem
         clip_ranges.setdefault(cid, []).append((seg.timeline_start_s, seg.timeline_end_s))
 
@@ -2017,9 +2890,297 @@ def extract_subtitle_review_candidates(
     return review_cands
 
 
+def _detect_two_shot_char_side_anchor(
+    base_id: str,
+    prompt_text: str,
+    turn_text: str = "",
+) -> str | None:
+    """
+    When a character card lands on a multi-character shot (two-shot / wide / medium shot),
+    inspect the clip's screenplay `prompt` for explicit left/right blocking of `base_id`
+    (e.g. `CHAR6a ... on the left` -> `'lower-left'`, `CHAR7a ... on the right` -> `'lower-right'`)
+    so the character card is anchored under the correct actor instead of whichever side is darker.
+    Returns `None` if the shot containing `turn_text` is a solo `close-up on CHAR...`.
+    """
+    if not base_id or not prompt_text:
+        return None
+    distinct_chars = {m.group(1).upper() for m in re.finditer(r"\b((?:CHAR|AL)\d+)[a-z]?\b", prompt_text, re.I)}
+    if len(distinct_chars) < 2:
+        return None
+
+    # Check if the specific shot containing `turn_text` is a solo close-up
+    if turn_text:
+        snippet = turn_text[:28].strip().lower()
+        for clause in prompt_text.split("|"):
+            cl_low = clause.lower()
+            if snippet and snippet in cl_low:
+                is_solo_cu = bool(
+                    re.search(rf"\bclose-up\s+on\s+{re.escape(base_id)}[a-z]?\b", cl_low, re.I)
+                    and not re.search(r"\bmedium\s+shot\s+of\b", cl_low, re.I)
+                )
+                if is_solo_cu:
+                    return None
+                break
+
+    pat = re.compile(
+        rf"\b{re.escape(base_id)}[a-z]?\b[^|.;:]*?\b(left|right)\b(?:\s+(?:end|side|of|at|in|from|behind|on))?",
+        re.I,
+    )
+    left_hits = 0
+    right_hits = 0
+    for m in pat.finditer(prompt_text):
+        side = m.group(1).lower()
+        if side == "left":
+            left_hits += 1
+        elif side == "right":
+            right_hits += 1
+    if left_hits > right_hits:
+        return "lower-left"
+    if right_hits > left_hits:
+        return "lower-right"
+    return None
+
+
+def generate_starter_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Build a ready-to-refine `/tmp/plan_<project>.json` starter plan from `inspect` ground truth,
+    locking scene cards to the opening sub-shot of each story scene and character cards to their
+    first speaking turn or first sub-shot appearance (with automatic two-shot left/right side detection).
+    """
+    style = dict(payload.get("recommended_style") or {})
+    story_scenes = payload.get("story_scenes") or []
+    char_apps = payload.get("character_appearances") or []
+    dur_s = float(payload.get("duration_sec") or 0.0)
+    global_ctx = " ".join(
+        [str(payload.get("screenplay_source") or "")]
+        + [str(s.get("scene_name") or "") for s in story_scenes]
+    )
+
+    starter_cards: list[dict[str, Any]] = []
+    for idx_sc, sc in enumerate(story_scenes, start=1):
+        s_lo = float(sc.get("start_s", sc.get("start_sec", 0.0)))
+        s_hi = float(sc.get("end_s", sc.get("end_sec", s_lo + 10.0)))
+        if s_hi - s_lo < 2.2:
+            continue
+        c_start = round(s_lo + 0.35, 2)
+        c_end = round(min(s_hi - 0.15, c_start + 3.65), 2)
+        m_tl = re.search(r"TL\s+(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)s", str(sc.get("first_clip_shots") or ""))
+        if m_tl:
+            tl_a, tl_b = float(m_tl.group(1)), float(m_tl.group(2))
+            if tl_b - tl_a >= 2.0:
+                c_start = round(tl_a + 0.25, 2)
+                c_end = round(min(tl_b - 0.12, c_start + 3.65), 2)
+        s_title, s_detail = _clean_scene_title_and_detail(
+            str(sc.get("scene_name") or sc.get("scene_id") or f"Scene {idx_sc}"),
+            str(sc.get("first_clip_prompt") or sc.get("first_clip_shots") or "") + " " + global_ctx,
+            idx_sc,
+        )
+        if (
+            starter_cards
+            and starter_cards[-1].get("kind") == "scene"
+            and starter_cards[-1].get("title") == s_title
+            and s_detail.startswith("Moments Later")
+            and "Intercut" not in s_detail
+        ):
+            continue
+        starter_cards.append(
+            {
+                "kind": "scene",
+                "scene_id": sc.get("scene_id"),
+                "start": c_start,
+                "end": c_end,
+                "title": s_title,
+                "detail": s_detail,
+                "anchor": "auto",
+            }
+        )
+
+    for ch in char_apps:
+        f_s = float(ch.get("first_appearance_s", ch.get("first_timeline_s", 0.0)))
+        c_start = round(f_s + 0.45, 2)
+        c_end = round(c_start + 3.60, 2)
+        spk_turns = ch.get("speaker_turns") or []
+        f_clips = ch.get("first_clips") or []
+        first_clip_hi = f_s + 18.0
+        if f_clips and "-" in str(f_clips[0].get("window_s") or ""):
+            try:
+                first_clip_hi = float(str(f_clips[0]["window_s"]).rstrip("s").split("-")[1])
+            except Exception:
+                pass
+        early_turns = [t for t in spk_turns if float(t.get("start_s", 0.0)) <= first_clip_hi + 22.0]
+        chosen_turn_end = c_end
+        chosen_turn_text = ""
+        if early_turns:
+            substantial = [
+                t for t in early_turns
+                if (float(t.get("end_s", 0.0)) - float(t.get("start_s", 0.0))) >= 2.0
+            ]
+            t0 = substantial[0] if substantial else early_turns[0]
+            c_start = round(max(f_s + 0.2, float(t0["start_s"])), 2)
+            c_end = round(max(c_start + 2.8, min(float(t0["end_s"]) + 1.2, c_start + 3.85)), 2)
+            chosen_turn_end = float(t0.get("end_s", c_end))
+            chosen_turn_text = str(t0.get("text") or "")
+
+        c_title, c_detail = _clean_char_title_and_detail(
+            str(ch.get("label") or ch.get("character_id") or "Character"),
+            str(ch.get("desc") or ""),
+        )
+        starter_cards.append(
+            {
+                "kind": "char",
+                "character_id": ch.get("character_id"),
+                "start": c_start,
+                "end": c_end,
+                "title": c_title,
+                "detail": c_detail,
+                "anchor": "auto",
+                "_turns": early_turns,
+                "_turn_end": chosen_turn_end,
+                "_turn_text": chosen_turn_text,
+                "_prompts": [str(fc.get("prompt") or "") for fc in f_clips if fc.get("prompt")],
+            }
+        )
+
+    starter_cards.sort(key=lambda c: (float(c["start"]), 0 if c["kind"] == "scene" else 1))
+    # Prevent accidental temporal collisions between scene cards and character cards in the starter plan
+    idx_c = 1
+    while idx_c < len(starter_cards):
+        prev_c = starter_cards[idx_c - 1]
+        curr_c = starter_cards[idx_c]
+        p_st, p_en = float(prev_c["start"]), float(prev_c["end"])
+        c_st, c_en = float(curr_c["start"]), float(curr_c["end"])
+        if c_st < p_en + 0.25:
+            if prev_c["kind"] == "scene" and curr_c["kind"] == "char" and (p_en - p_st) > 3.0:
+                p_en = round(p_st + 3.0, 2)
+                prev_c["end"] = p_en
+            c_dur = max(2.8, min(3.5, c_en - c_st))
+            shifted_st = round(p_en + 0.25, 2)
+            cur_turn_end = float(curr_c.get("_turn_end", 0.0))
+            later_turns = [
+                t for t in (curr_c.get("_turns") or [])
+                if float(t.get("start_s", 0.0)) >= p_en + 0.20
+                and float(t.get("start_s", 0.0)) <= p_en + 16.0
+            ]
+            # If shifting start to `p_en + 0.25` still overlaps the current spoken turn by >= 1.6s, stay in this turn
+            if cur_turn_end - shifted_st >= 1.6 or not later_turns:
+                curr_c["start"] = shifted_st
+                curr_c["end"] = round(shifted_st + c_dur, 2)
+            else:
+                lt = later_turns[0]
+                curr_c["start"] = round(float(lt["start_s"]), 2)
+                curr_c["end"] = round(max(curr_c["start"] + 2.8, min(float(lt["end_s"]) + 1.0, curr_c["start"] + 3.6)), 2)
+                curr_c["_turn_end"] = float(lt.get("end_s", curr_c["end"]))
+                curr_c["_turn_text"] = str(lt.get("text") or "")
+                # Re-sort if jumping to `later_turns[0]` moved `curr_c` past a subsequent card
+                if idx_c + 1 < len(starter_cards) and curr_c["start"] > float(starter_cards[idx_c + 1]["start"]):
+                    starter_cards.sort(key=lambda c: (float(c["start"]), 0 if c["kind"] == "scene" else 1))
+                    continue
+        idx_c += 1
+
+    for c_item in starter_cards:
+        if c_item.get("kind") == "char":
+            side_anc = _detect_two_shot_char_side_anchor(
+                str(c_item.get("character_id") or ""),
+                " ".join(c_item.get("_prompts") or []),
+                str(c_item.get("_turn_text") or ""),
+            )
+            if side_anc:
+                c_item["anchor"] = side_anc
+                c_item["auto_avoid_glare"] = False
+        c_item.pop("_turns", None)
+        c_item.pop("_turn_end", None)
+        c_item.pop("_turn_text", None)
+        c_item.pop("_prompts", None)
+    if dur_s > 6.0:
+        starter_cards.append(
+            {
+                "kind": "end",
+                "start": round(max(0.0, dur_s - 4.5), 2),
+                "end": round(dur_s, 2),
+                "title": "THE END",
+                "detail": "",
+                "anchor": "center",
+                "hold_to_end": True,
+            }
+        )
+
+    return {
+        "style": style,
+        "cards": starter_cards,
+        "subtitles": {
+            "style_in_place": True,
+            "normalize_with_screenplay": True,
+            "sentence_case": True,
+        },
+    }
+
+
+def write_timeline_cheat_sheet(
+    out_txt: Path,
+    payload: dict[str, Any],
+    video_segs: list[VideoSegment],
+    subs: list[dict[str, Any]],
+    clip_info: dict[str, dict[str, Any]],
+) -> str:
+    """
+    Write a compact, human/LLM-readable 1-line-per-clip and 1-line-per-subtitle cheat sheet
+    (`/tmp/inspect_<project>_timeline.txt`) so agents can read any time range with `read_file`
+    in 0.1s and NEVER need to run `python3 -c` ad-hoc scripts.
+    """
+    lines: list[str] = []
+    lines.append(f"# TIMELINE & SUBTITLE CHEAT SHEET — Project: {payload.get('project')} (Duration: {payload.get('duration_sec')}s)")
+    if payload.get("hook_window_s"):
+        hw = payload["hook_window_s"]
+        lines.append(f"# COLD-OPEN HOOK TEASER: {hw[0]:.2f}s - {hw[1]:.2f}s (Do NOT place chronological Scene 1/2 cards inside Hook unless requested)")
+    lines.append("")
+    lines.append("## 1. STORY SCENES")
+    for sc in payload.get("story_scenes") or []:
+        lines.append(
+            f"- {sc.get('scene_id', 'S?')}: {sc.get('start_s', 0.0):.2f}-{sc.get('end_s', 0.0):.2f}s | "
+            f"first_clip={sc.get('first_clip', '')} ({sc.get('first_clip_window_s', '')}) | {sc.get('scene_name', '')}"
+        )
+    lines.append("")
+    lines.append("## 2. CHARACTER APPEARANCES (ALL SCENES & SPEAKER TURNS)")
+    for ch in payload.get("character_appearances") or []:
+        apps_str = ", ".join(
+            f"{a['scene_id']}({a['first_clip_id']}:{a['start_s']:.1f}-{a['end_s']:.1f}s)"
+            for a in (ch.get("all_scene_appearances") or [])
+        )
+        turns_str = "; ".join(
+            f"{t['speaker']}@{t['start_s']:.1f}-{t['end_s']:.1f}s"
+            for t in (ch.get("speaker_turns") or [])[:5]
+        )
+        lines.append(
+            f"- {ch.get('character_id')} | first={ch.get('first_appearance_s', 0.0):.2f}s | {ch.get('label')} | "
+            f"scenes=[{apps_str}] | speaker_turns=[{turns_str}]"
+        )
+    lines.append("")
+    lines.append("## 3. VIDEO SEGMENTS ON TIMELINE")
+    for seg in video_segs:
+        cid = Path(seg.clip_name).stem
+        ci = clip_info.get(cid, {})
+        sid = ci.get("scene_id", "")
+        goc = (ci.get("shot_breakdown") or "")[:110]
+        dlg = (ci.get("dialogue") or "")[:110]
+        lines.append(
+            f"[{seg.index:03d}] {seg.timeline_start_s:7.2f}-{seg.timeline_end_s:7.2f}s (src {seg.source_start_s:.1f}-{seg.source_start_s+seg.source_dur_s:.1f}s) | "
+            f"{seg.clip_name} | {sid} | {goc} || {dlg}"
+        )
+    lines.append("")
+    lines.append("## 4. SUBTITLE CUES")
+    for c in subs:
+        txt_one = " ".join(str(c.get("text") or "").split())
+        lines.append(f"#{c.get('index', 0):03d} [{float(c.get('start_s', 0.0)):7.2f}-{float(c.get('end_s', 0.0)):7.2f}s] {txt_one}")
+
+    out_txt.parent.mkdir(parents=True, exist_ok=True)
+    out_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return str(out_txt)
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     project_dir = resolve_project_dir(args.project)
     draft = load_draft(project_dir)
+    sp_arg = getattr(args, "screenplay", None)
     with ThreadPoolExecutor(max_workers=4) as pool:
         f_vsegs = pool.submit(load_video_timeline, draft)
         f_subs = pool.submit(extract_subtitles, draft)
@@ -2028,12 +3189,13 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         subs = f_subs.result()
         cards = f_cards.result()
         f_scenes = pool.submit(group_scene_boundaries, video_segs)
-        f_gt = pool.submit(extract_screenplay_ground_truth, video_segs, subs)
-        f_sp_ctx = pool.submit(build_screenplay_subtitle_context, video_segs, subs)
+        f_gt = pool.submit(extract_screenplay_ground_truth, video_segs, subs, screenplay_path=sp_arg)
+        f_sp_ctx = pool.submit(build_screenplay_subtitle_context, video_segs, subs, screenplay_path=sp_arg)
         scenes = f_scenes.result()
         gt = f_gt.result()
         sp_ctx = f_sp_ctx.result()
 
+    clip_info = gt.pop("_clip_info", {}) if isinstance(gt, dict) else {}
     sub_status = (
         "ready"
         if subs
@@ -2049,16 +3211,29 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     rec_style = gt.get("recommended_style", {})
     sub_review_cands = extract_subtitle_review_candidates(subs, sp_ctx) if subs else []
 
+    out_path = (
+        Path(os.path.expanduser(args.out))
+        if getattr(args, "out", None)
+        else Path(f"/tmp/inspect_{project_dir.name}.json")
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cheat_sheet_path = out_path.parent / f"{out_path.stem}_timeline.txt"
+    starter_plan_path = Path(f"/tmp/plan_{project_dir.name}.json")
+    starter_plan_alias = Path(f"/tmp/starter_plan_{project_dir.name}.json")
+
     payload: dict[str, Any] = {
         "project": project_dir.name,
         "project_dir": str(project_dir),
         "duration_sec": duration_sec,
+        "hook_window_s": gt.get("hook_window_s"),
         "video_segment_count": len(video_segs),
         "scene_count": len(story_scenes),
         "character_count": len(char_appearances),
         "recommended_style": rec_style,
         "recommended_probe_windows": gt.get("recommended_probe_windows", ""),
         "screenplay_source": gt.get("screenplay_source"),
+        "starter_plan_path": str(starter_plan_path),
+        "timeline_cheat_sheet": str(cheat_sheet_path),
         "existing_card_segment_count": len(cards),
         "subtitle_cue_count": len(subs),
         "subtitle_status": sub_status,
@@ -2082,25 +3257,29 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         payload["existing_cards"] = cards
         payload["subtitles"] = subs
 
-    out_path = (
-        Path(os.path.expanduser(args.out))
-        if getattr(args, "out", None)
-        else Path(f"/tmp/inspect_{project_dir.name}.json")
-    )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
+
+    starter_plan = generate_starter_plan(payload)
+    starter_json = json.dumps(starter_plan, ensure_ascii=False, indent=2)
+    starter_plan_path.write_text(starter_json, encoding="utf-8")
+    starter_plan_alias.write_text(starter_json, encoding="utf-8")
+    write_timeline_cheat_sheet(cheat_sheet_path, payload, video_segs, subs, clip_info)
+
     print(
         json.dumps(
             {
                 "project": payload["project"],
                 "duration_sec": payload["duration_sec"],
+                "hook_window_s": payload.get("hook_window_s"),
                 "video_segment_count": payload["video_segment_count"],
                 "scene_count": payload["scene_count"],
                 "character_count": payload["character_count"],
                 "screenplay_source": payload.get("screenplay_source"),
                 "recommended_style_archetype": (payload.get("recommended_style") or {}).get("archetype"),
                 "recommended_probe_windows": payload.get("recommended_probe_windows", ""),
+                "starter_plan_path": str(starter_plan_path),
+                "timeline_cheat_sheet": str(cheat_sheet_path),
                 "existing_card_segment_count": payload["existing_card_segment_count"],
                 "subtitle_cue_count": payload["subtitle_cue_count"],
                 "subtitle_review_candidate_count": len(sub_review_cands),
@@ -2140,11 +3319,16 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
     fast_cuts = extract_fast_timeline_cuts(video_segs)
 
-    # Phase 1: Compute window cuts across all windows in parallel (only run ffmpeg scdet when --scdet is set or flat video has <= 2 cuts)
+    # Phase 1: Compute window cuts across all windows in parallel.
+    # Automatically enable cached ffmpeg scdet when `--scdet` is set OR when a window has a span > 4.5s
+    # without internal `goc` sub-shot timestamps (e.g. arrow-separated `goc` descriptions).
     def _compute_window_cuts(item: tuple[int, tuple[float, float]]) -> dict[str, Any]:
         w_idx, (w_start, w_end) = item
         win_fast = [c for c in fast_cuts if w_start + 0.15 < c < w_end - 0.15]
-        if getattr(args, "scdet", False) or len(fast_cuts) <= 2:
+        fast_bounds = [w_start] + win_fast + [w_end]
+        max_unsplit_span = max((fast_bounds[i + 1] - fast_bounds[i] for i in range(len(fast_bounds) - 1)), default=0.0)
+        need_scdet = bool(getattr(args, "scdet", False) or len(fast_cuts) <= 2 or max_unsplit_span > 4.5)
+        if need_scdet:
             cuts_info = detect_window_cuts(video_segs, w_start, w_end)
             all_cuts = sorted(set(cuts_info["all_cuts"] + win_fast))
             seg_cuts = cuts_info["segment_cuts"]
@@ -2392,6 +3576,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         draft,
         plan,
         snap_to_cuts=not bool(getattr(args, "no_snap_cuts", False)),
+        screenplay_path=getattr(args, "screenplay", None),
     )
     preset = summary.pop("_preset")
 
@@ -2448,6 +3633,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ins = sub.add_parser("inspect", help="Inspect video timeline, scene boundaries, cards, and subtitles.")
     p_ins.add_argument("project", help="CapCut project name or path")
     p_ins.add_argument("--out", help="Optional JSON output path")
+    p_ins.add_argument("--screenplay", help="Optional explicit path to sf-board.json or .project directory")
     p_ins.add_argument("--full", action="store_true", help="Include raw video_segments, existing_cards, and subtitles arrays")
     p_ins.set_defaults(func=cmd_inspect)
 
@@ -2461,6 +3647,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_app = sub.add_parser("apply", help="Apply card + subtitle plan.json directly to CapCut project and render WYSIWYG preview sheet.")
     p_app.add_argument("project", help="CapCut project name or path")
     p_app.add_argument("--plan", required=True, help="Path to plan.json")
+    p_app.add_argument("--screenplay", help="Optional explicit path to sf-board.json or .project directory")
     p_app.add_argument("--preview", help="Optional path for WYSIWYG preview contact sheet (.jpg)")
     p_app.add_argument("--no-preview", action="store_true", help="Skip rendering preview sheet for instant (<0.3s) application")
     p_app.add_argument("--no-snap-cuts", action="store_true", help="Disable automatic end-snapping to nearby shot cuts")

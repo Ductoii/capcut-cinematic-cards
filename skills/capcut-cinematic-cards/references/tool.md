@@ -3,9 +3,9 @@
 ## Subcommands
 
 ### 1. `inspect`
-Unwraps both top-level and Compound Clip (`materials.drafts`) timelines, groups scenes, and extracts subtitles/cards.
+Unwraps both top-level and Compound Clip (`materials.drafts`) timelines, detects Cold-Open Hook teasers (`hook_window_s`), maps chronological story scenes and full character appearances (`all_scene_appearances` + subtitle-aligned `speaker_turns`), writes `/tmp/inspect_<project>_timeline.txt` (human/LLM-readable cheat sheet), and generates `/tmp/plan_<project>.json`.
 ```bash
-python3 scripts/cards.py inspect "<project>" --out /tmp/inspect.json
+python3 scripts/cards.py inspect "<project>" [--screenplay "/path/to/sf-board.json"] --out /tmp/inspect.json
 ```
 
 ### 2. `fonts` & `fetch-font`
@@ -36,6 +36,7 @@ python3 scripts/cards.py apply "<project>" --plan /tmp/plan.json --no-preview
 
 ```json
 {
+  "outro_black_sec": 3.0,
   "style": "<Copy or customize `recommended_style` from /tmp/inspect_<project>.json — or omit `style` to auto-apply `recommended_style`>",
   "cards": [
     {

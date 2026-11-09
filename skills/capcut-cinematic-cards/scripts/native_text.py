@@ -719,16 +719,17 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
         or detail_accent_color
     )
 
-    # Subtle micro-stroke (0.0 .. 0.022) + soft optical drop shadow — never thick cartoon borders
+    # Crisp dark outline (0.0 .. 0.042) + optical drop shadow
     stroke_color = str(spec.get("stroke_color") or "#0B0D10")
     raw_stroke_w = float(spec.get("stroke_width") if spec.get("stroke_width") is not None else 0.015)
-    stroke_w = max(0.0, min(0.024, raw_stroke_w))
+    stroke_w = max(0.0, min(0.042, raw_stroke_w))
     check_flag = 47 if stroke_w > 0.001 else 39
 
     shadow_color = str(spec.get("shadow_color") or "#05070A")
     shadow_alpha = float(spec.get("shadow_alpha") if spec.get("shadow_alpha") is not None else 0.90)
     shadow_smoothing = float(spec.get("shadow_smoothing") if spec.get("shadow_smoothing") is not None else 0.34)
     shadow_distance = float(spec.get("shadow_distance") if spec.get("shadow_distance") is not None else 2.2)
+    shadow_diffuse = float(spec.get("shadow_diffuse") if spec.get("shadow_diffuse") is not None else 0.04)
 
     title_letter_spacing = float(spec.get("title_letter_spacing") or 0.0)
     detail_letter_spacing = float(spec.get("detail_letter_spacing") or 0.0)
@@ -750,6 +751,7 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
             shadow_alpha=shadow_alpha,
             shadow_smoothing=shadow_smoothing,
             shadow_distance=shadow_distance,
+            shadow_diffuse=shadow_diffuse,
             check_flag=check_flag,
         ),
         character_detail=TextLayerStyle(
@@ -761,11 +763,12 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
             flanker_color_hex=flanker_color,
             letter_spacing=detail_letter_spacing,
             stroke_color_hex=stroke_color,
-            stroke_width=round(stroke_w * 0.85, 4),
+            stroke_width=round(stroke_w * 0.92, 4),
             shadow_color_hex=shadow_color,
             shadow_alpha=shadow_alpha,
             shadow_smoothing=shadow_smoothing,
             shadow_distance=shadow_distance,
+            shadow_diffuse=shadow_diffuse,
             check_flag=check_flag,
         ),
         time_title=TextLayerStyle(
@@ -782,6 +785,7 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
             shadow_alpha=shadow_alpha,
             shadow_smoothing=shadow_smoothing,
             shadow_distance=shadow_distance,
+            shadow_diffuse=shadow_diffuse,
             check_flag=check_flag,
         ),
         time_detail=TextLayerStyle(
@@ -793,11 +797,12 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
             flanker_color_hex=flanker_color,
             letter_spacing=detail_letter_spacing,
             stroke_color_hex=stroke_color,
-            stroke_width=round(stroke_w * 0.85, 4),
+            stroke_width=round(stroke_w * 0.92, 4),
             shadow_color_hex=shadow_color,
             shadow_alpha=shadow_alpha,
             shadow_smoothing=shadow_smoothing,
             shadow_distance=shadow_distance,
+            shadow_diffuse=shadow_diffuse,
             check_flag=check_flag,
         ),
         ending_title=TextLayerStyle(
@@ -814,6 +819,7 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
             shadow_alpha=shadow_alpha,
             shadow_smoothing=shadow_smoothing,
             shadow_distance=shadow_distance,
+            shadow_diffuse=shadow_diffuse,
             check_flag=check_flag,
         ),
         ending_detail=TextLayerStyle(
@@ -825,11 +831,12 @@ def resolve_style(style_spec: dict[str, Any] | None) -> FilmCardStyle:
             flanker_color_hex=flanker_color,
             letter_spacing=detail_letter_spacing,
             stroke_color_hex=stroke_color,
-            stroke_width=round(stroke_w * 0.85, 4),
+            stroke_width=round(stroke_w * 0.92, 4),
             shadow_color_hex=shadow_color,
             shadow_alpha=shadow_alpha,
             shadow_smoothing=shadow_smoothing,
             shadow_distance=shadow_distance,
+            shadow_diffuse=shadow_diffuse,
             check_flag=check_flag,
         ),
         line_gap=line_gap,
@@ -943,10 +950,34 @@ def resolve_card_styles(card: dict[str, Any], preset: FilmCardStyle) -> tuple[Te
         ac = str(card["accent_color"])
         d_st = replace(d_st, accent_color_hex=ac, flanker_color_hex=ac)
     if card.get("stroke_width") is not None:
-        sw = max(0.0, min(0.025, float(card["stroke_width"])))
+        sw = max(0.0, min(0.042, float(card["stroke_width"])))
         cf = 47 if sw > 0.001 else 39
         t_st = replace(t_st, stroke_width=sw, check_flag=cf)
-        d_st = replace(d_st, stroke_width=round(sw * 0.85, 4), check_flag=cf)
+        d_st = replace(d_st, stroke_width=round(sw * 0.92, 4), check_flag=cf)
+    if card.get("stroke_color"):
+        sc_hex = str(card["stroke_color"])
+        t_st = replace(t_st, stroke_color_hex=sc_hex)
+        d_st = replace(d_st, stroke_color_hex=sc_hex)
+    if card.get("stroke_alpha") is not None:
+        sa = max(0.0, min(1.0, float(card["stroke_alpha"])))
+        t_st = replace(t_st, stroke_alpha=sa)
+        d_st = replace(d_st, stroke_alpha=sa)
+    if card.get("shadow_alpha") is not None:
+        sha = max(0.0, min(1.0, float(card["shadow_alpha"])))
+        t_st = replace(t_st, shadow_alpha=sha)
+        d_st = replace(d_st, shadow_alpha=sha)
+    if card.get("shadow_smoothing") is not None:
+        shs = max(0.0, min(3.0, float(card["shadow_smoothing"])))
+        t_st = replace(t_st, shadow_smoothing=shs)
+        d_st = replace(d_st, shadow_smoothing=shs)
+    if card.get("shadow_distance") is not None:
+        shd = max(0.0, min(10.0, float(card["shadow_distance"])))
+        t_st = replace(t_st, shadow_distance=shd)
+        d_st = replace(d_st, shadow_distance=shd)
+    if card.get("shadow_diffuse") is not None:
+        shdf = max(0.0, min(1.0, float(card["shadow_diffuse"])))
+        t_st = replace(t_st, shadow_diffuse=shdf)
+        d_st = replace(d_st, shadow_diffuse=shdf)
 
     align = str(card.get("align") or ("center" if kind in ("end", "ending") else preset.align)).strip().lower()
     order = str(card.get("order") or default_order).strip().lower()
@@ -1234,7 +1265,7 @@ def compute_rich_text_spans(
             spans.append((0, p_end, acc_col, style.font_size))
             lo = p_end
 
-        m_suf = re.search(r"((?:,\s*\d+|\s+[—·•]\s*(?:Age\s*\d+|\d+)))$", text[lo:], re.I)
+        m_suf = re.search(r"((?:,\s*\d+s?|\s+[—·•]\s*(?:Age\s*\d+s?|\d+s?)))$", text[lo:], re.I)
         if m_suf and acc_col != style.color_hex:
             s_start = lo + m_suf.start(1)
             if s_start > lo:
@@ -1935,8 +1966,6 @@ def style_subtitle_track_in_place(
         sample_diff: str | None = None
         if str(idx) in cue_overrides:
             new_text = cue_overrides[str(idx)]
-        elif str(idx + 1) in cue_overrides:
-            new_text = cue_overrides[str(idx + 1)]
         else:
             before_norm = " ".join(new_text.split())
             if normalize_with_screenplay and screenplay_context:
@@ -2187,14 +2216,23 @@ def render_card_on_frame(
             use_ls = False
 
         sh_rgba = hex_to_rgba_ints(style.shadow_color_hex, style.shadow_alpha)
-        sh_off = max(2, int(round(3.0 * scale_factor)))
-        st_px = max(1, int(round(style.stroke_width * 95.0 * scale_factor))) if style.stroke_width > 0.001 else 0
+        sh_off = max(1, int(round(style.shadow_distance * 1.3 * scale_factor)))
+        st_px = max(1, int(round(style.stroke_width * 135.0 * scale_factor))) if style.stroke_width > 0.001 else 0
+        sh_st_px = st_px + max(1, int(round(3.5 * scale_factor)))
         st_rgba = hex_to_rgba_ints(style.stroke_color_hex, style.stroke_alpha)
 
         for sub_txt, fnt, s_col, adv in span_renders:
             fg_rgba = hex_to_rgba_ints(s_col, style.alpha)
             if use_ls:
-                draw_sh.text((cur_x + sh_off, baseline_y + sh_off), sub_txt, font=fnt, fill=sh_rgba, anchor="ls")
+                draw_sh.text(
+                    (cur_x + sh_off, baseline_y + sh_off),
+                    sub_txt,
+                    font=fnt,
+                    fill=sh_rgba,
+                    stroke_width=sh_st_px,
+                    stroke_fill=sh_rgba,
+                    anchor="ls",
+                )
                 draw_fg.text(
                     (cur_x, baseline_y),
                     sub_txt,
@@ -2205,7 +2243,14 @@ def render_card_on_frame(
                     anchor="ls",
                 )
             else:
-                draw_sh.text((cur_x + sh_off, baseline_y + sh_off), sub_txt, font=fnt, fill=sh_rgba)
+                draw_sh.text(
+                    (cur_x + sh_off, baseline_y + sh_off),
+                    sub_txt,
+                    font=fnt,
+                    fill=sh_rgba,
+                    stroke_width=sh_st_px,
+                    stroke_fill=sh_rgba,
+                )
                 draw_fg.text(
                     (cur_x, baseline_y),
                     sub_txt,
@@ -2220,7 +2265,7 @@ def render_card_on_frame(
     if detail_text:
         _draw_layer(detail_text, detail_style, x_detail if x_detail is not None else x, y_detail, False)
 
-    blur_r = max(2.0, 4.5 * scale_factor)
+    blur_r = max(1.6, (2.2 + title_style.shadow_smoothing * 11.0) * scale_factor)
     shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=blur_r))
     comp = Image.alpha_composite(base_img, shadow_layer)
     comp = Image.alpha_composite(comp, overlay)
