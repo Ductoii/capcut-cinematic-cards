@@ -1524,6 +1524,82 @@ def build_text_segment(
     }
 
 
+_SUB_OPENS_EN = {
+    "and", "but", "or", "so", "yet", "because", "although", "though",
+    "while", "when", "where", "if", "unless", "until", "since",
+    "before", "after", "that", "which", "who", "whose",
+}
+_SUB_OPENS_VI = {
+    "và", "nhưng", "hoặc", "hay", "mà", "nên", "vì", "bởi", "do",
+    "nếu", "tuy", "dù", "khi", "lúc", "nơi", "để", "thì", "là", "rằng",
+}
+_SUB_LEANS_NEXT_EN = {
+    "a", "an", "the", "to", "of", "in", "on", "at", "for", "with", "from",
+    "by", "into", "onto", "is", "are", "was", "were", "be", "been",
+    "have", "has", "had", "do", "does", "did", "will", "would", "can",
+    "could", "should", "may", "might", "must", "not", "very", "so", "too",
+    "quite", "rather", "more", "most", "my", "your", "his", "her", "its",
+    "our", "their", "this", "that", "these", "those", "what", "which", "who",
+    "mr.", "mrs.", "ms.", "dr.", "st.", "prof.", "capt.", "gen.", "sen.",
+}
+_SUB_LEANS_NEXT_VI = {
+    "các", "những", "một", "mỗi", "mọi", "đã", "đang", "sẽ", "vừa", "mới",
+    "sắp", "rất", "quá", "lắm", "khá", "hơi", "không", "chẳng", "chưa",
+    "đừng", "chớ", "của", "trong", "trên", "dưới", "với", "về", "từ",
+    "đến", "tới", "cho", "tại", "bởi", "sự", "cuộc", "việc", "niềm", "nỗi",
+    "cái", "chiếc", "người", "nhà", "đứa", "con", "bản", "căn", "ngôi",
+    "bức", "tờ", "cuốn", "quyển", "mảnh", "tấm", "bộ", "đôi", "vị", "kẻ",
+}
+_SUB_LEANS_PREV_VI = {
+    "này", "đó", "kia", "ấy", "nọ", "thế", "vậy", "rồi", "xong", "được",
+    "mất", "hơn", "nhất", "lắm", "quá", "thôi", "nhé", "nhỉ", "nha",
+    "ạ", "à", "ừ", "chứ",
+}
+_SUB_VI_PAIRS = {
+    ("có", "thể"), ("không", "thể"), ("chúng", "tôi"), ("chúng", "ta"),
+    ("anh", "ấy"), ("cô", "ấy"), ("họ", "đã"), ("bây", "giờ"),
+    ("lúc", "này"), ("thế", "nào"), ("tại", "sao"), ("vì", "sao"),
+    ("như", "vậy"), ("như", "thế"), ("cho", "nên"), ("bởi", "vì"),
+    ("thay", "vì"), ("mặc", "dù"), ("ví", "dụ"), ("nghĩa", "là"), ("tức", "là"),
+}
+
+
+def _subtitle_break_bonus(words: list[str], idx: int, is_vi: bool) -> float:
+    """
+    Linguistic phrase-cohesion score at word split index `idx` (between `words[idx-1]` and `words[idx]`).
+    Positive rewards clean clause/punctuation boundaries; negative penalizes splitting inside noun/verb phrases
+    or Vietnamese 2-syllable compound words.
+    """
+    w_prev_raw = words[idx - 1]
+    w_next_raw = words[idx]
+    prev_clean = w_prev_raw.strip("\"'“”‘’()[]").lower()
+    prev_bare = prev_clean.rstrip(".,!?;:—–-")
+    next_bare = w_next_raw.strip("\"'“”‘’()[],.!?;:—–-").lower()
+
+    bonus = 0.0
+    if prev_clean not in ("mr.", "mrs.", "ms.", "dr.", "st.", "prof.", "capt.", "gen.", "sen."):
+        if w_prev_raw.endswith((".", "!", "?")):
+            bonus += 14.0
+        elif w_prev_raw.endswith((",", ";", ":", "—", "–")):
+            bonus += 10.0
+
+    opens = _SUB_OPENS_VI if is_vi else _SUB_OPENS_EN
+    leans_next = _SUB_LEANS_NEXT_VI if is_vi else _SUB_LEANS_NEXT_EN
+
+    if next_bare in opens:
+        bonus += 6.0
+    if prev_clean in leans_next or prev_bare in leans_next:
+        bonus -= 10.0
+    if is_vi:
+        if next_bare in _SUB_LEANS_PREV_VI:
+            bonus -= 10.0
+        if (prev_bare, next_bare) in _SUB_VI_PAIRS or (prev_bare and prev_bare == next_bare):
+            bonus -= 16.0
+        elif bonus == 0.0:
+            bonus -= 3.0
+    return bonus
+
+
 def wrap_subtitle_balanced(text: str, max_chars: int = 42) -> str:
     single = " ".join((text or "").split())
     if len(single) <= max_chars:
@@ -1531,14 +1607,22 @@ def wrap_subtitle_balanced(text: str, max_chars: int = 42) -> str:
     words = single.split(" ")
     if len(words) < 2:
         return single
+    is_vi = bool(re.search(r"[ăâđêôơưáàảãạéèẻẽẹíìỉĩịóòỏõọúùủũụýỳỷỹỵ]", single.lower()))
     best_split = 1
-    best_diff = 10**9
+    best_cost = 1e9
     for i in range(1, len(words)):
         l1 = " ".join(words[:i])
         l2 = " ".join(words[i:])
-        diff = abs(len(l1) - len(l2))
-        if len(l1) <= max_chars + 6 and len(l2) <= max_chars + 6 and diff < best_diff:
-            best_diff = diff
+        overflow_pen = 0.0
+        if len(l1) > max_chars + 6 or len(l2) > max_chars + 6:
+            overflow_pen = 200.0 + (max(len(l1), len(l2)) - (max_chars + 6)) * 10.0
+        elif len(l1) > max_chars or len(l2) > max_chars:
+            overflow_pen = (max(len(l1), len(l2)) - max_chars) * 4.5
+        diff_cost = abs(len(l1) - len(l2))
+        ling_bonus = _subtitle_break_bonus(words, i, is_vi)
+        cost = diff_cost + overflow_pen - ling_bonus * 1.6
+        if cost < best_cost:
+            best_cost = cost
             best_split = i
     return " ".join(words[:best_split]) + "\n" + " ".join(words[best_split:])
 

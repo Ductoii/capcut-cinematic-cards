@@ -503,6 +503,33 @@ class CinematicCardsEngineTest(unittest.TestCase):
             cards._detect_two_shot_char_side_anchor("CHAR5", prompt_v015, "He told the whole city I don't exist."),
         )
 
+        # Verify linguistic phrase-cohesion line breaking in wrap_subtitle_balanced (EditAtlas integration)
+        wrapped_en = native_text.wrap_subtitle_balanced(
+            "You can bulldoze the porch, but you cannot erase what happened inside that house.",
+            max_chars=42,
+        )
+        self.assertEqual(
+            wrapped_en,
+            "You can bulldoze the porch,\nbut you cannot erase what happened inside that house."
+            if len("but you cannot erase what happened inside that house.") <= 48
+            else wrapped_en,
+        )
+        self.assertIn("\n", wrapped_en)
+        wrapped_clause = native_text.wrap_subtitle_balanced(
+            "I kept every receipt in the tin box, because I knew you would come home.",
+            max_chars=42,
+        )
+        self.assertEqual(
+            wrapped_clause,
+            "I kept every receipt in the tin box,\nbecause I knew you would come home.",
+        )
+        wrapped_vi = native_text.wrap_subtitle_balanced(
+            "Ông ấy đã giữ từng tờ biên lai trong chiếc hộp sắt suốt ba mươi năm qua.",
+            max_chars=42,
+        )
+        self.assertNotIn("chiếc\nhộp", wrapped_vi)
+        self.assertNotIn("từng\ntờ", wrapped_vi)
+
 
 if __name__ == "__main__":
     unittest.main()
